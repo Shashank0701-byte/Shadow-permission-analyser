@@ -1,0 +1,27 @@
+{
+  "users": [
+    "intern-user",
+    "terraform-user"
+  ],
+  "roles": [
+    "AWSServiceRoleForResourceExplorer",
+    "AWSServiceRoleForSupport",
+    "AWSServiceRoleForTrustedAdvisor"
+  ],
+  "policies": [],
+  "user_roles": [],
+  "role_policies": [
+    {
+      "role": "AWSServiceRoleForResourceExplorer",
+      "policy": "AWSResourceExplorerServiceRolePolicy"
+    },
+    {
+      "role": "AWSServiceRoleForSupport",
+      "policy": "AWSSupportServiceRolePolicy"
+    },
+    {
+      "role": "AWSServiceRoleForTrustedAdvisor",
+      "policy": "AWSTrustedAdvisorServiceRolePolicy"
+    }
+  ]
+}

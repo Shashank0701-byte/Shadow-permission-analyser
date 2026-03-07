@@ -6,6 +6,8 @@ import WeakestUserPanel from "./components/WeakestUserPanel";
 import CentralityPanel from "./components/CentralityPanel";
 import EscalationPanel from "./components/EscalationPanel";
 import BlastRadiusPanel from "./components/BlastRadiusPanel";
+import AttackSimulationPanel from "./components/AttackSimulationPanel";
+import RemediationPanel from "./components/RemediationPanel";
 
 const API_BASE = import.meta.env.VITE_API_URL;
 
@@ -13,11 +15,12 @@ function App() {
   const [simData, setSimData] = useState(null);
   const [graphData, setGraphData] = useState({ nodes: [], links: [] });
   const [blastData, setBlastData] = useState(null);
-  const [loading, setLoading] = useState(false);
+  const [loadingScan, setLoadingScan] = useState(false);
+  const [loadingAws, setLoadingAws] = useState(false);
   const [graphKey, setGraphKey] = useState(0);
 
   const runSimulation = useCallback(async () => {
-    setLoading(true);
+    setLoadingScan(true);
     try {
       const res = await fetch(`${API_BASE}/simulate`, { method: "POST" });
       if (!res.ok) throw new Error(`Simulate failed: ${res.status}`);
@@ -44,7 +47,30 @@ function App() {
     } catch (err) {
       console.error("Simulation error:", err);
     } finally {
-      setLoading(false);
+      setLoadingScan(false);
+    }
+  }, []);
+
+  const runAwsIngestion = useCallback(async () => {
+    setLoadingAws(true);
+    try {
+      const res = await fetch(`${API_BASE}/ingest-aws`, { method: "POST" });
+      if (!res.ok) throw new Error(`Ingest failed: ${res.status}`);
+      const data = await res.json();
+      setSimData(data);
+
+      // Fetch fresh graph
+      const gRes = await fetch(`${API_BASE}/graph`);
+      if (gRes.ok) {
+        const gData = await gRes.json();
+        setGraphData(gData);
+        setGraphKey((k) => k + 1);
+      }
+      setBlastData(null); // Clear previous blast radius
+    } catch (err) {
+      console.error("AWS Ingestion error:", err);
+    } finally {
+      setLoadingAws(false);
     }
   }, []);
 
@@ -87,13 +113,21 @@ function App() {
               Neo4j Connected
             </div>
             <button
-              className={`btn-simulate ${loading ? "loading" : ""}`}
+              className={`btn-simulate ${loadingAws ? "loading" : ""}`}
+              style={{ background: "rgba(255,153,0,0.15)", border: "1px solid rgba(255,153,0,0.3)", color: "#FF9900" }}
+              onClick={runAwsIngestion}
+              disabled={loadingAws || loadingScan}
+              id="aws-btn"
+            >
+              {loadingAws ? "⏳" : "☁️"} {loadingAws ? "Fetching…" : "AWS IAM Data"}
+            </button>
+            <button
+              className={`btn-simulate ${loadingScan ? "loading" : ""}`}
               onClick={runSimulation}
-              disabled={loading}
+              disabled={loadingScan || loadingAws}
               id="simulate-btn"
             >
-              {loading ? "⏳" : "⚡"}{" "}
-              {loading ? "Analyzing…" : "Run Simulation"}
+              {loadingScan ? "⏳" : "⚡"} {loadingScan ? "Scanning…" : "Scan Analysis"}
             </button>
           </div>
         </div>
@@ -124,6 +158,13 @@ function App() {
                 </div>
                 <div className="legend-item">
                   <span className="legend-dot resource"></span> Resource
+                </div>
+                <div className="legend-item">
+                  <span className="legend-dot" style={{background: "#c084fc"}}></span> Policy
+                </div>
+                <div className="legend-item" style={{marginLeft: "0.5rem", paddingLeft: "1rem", borderLeft: "1px solid rgba(255,255,255,0.1)"}}>
+                  <span style={{display: "inline-block", width: "16px", height: "3px", background: "#f43f5e", borderRadius: "2px", boxShadow: "0 0 8px rgba(244, 63, 94, 0.6)"}}></span>
+                  <span style={{fontWeight: 600, color: "#f43f5e", letterSpacing: "0.02em"}}>Escalation Chain</span>
                 </div>
               </div>
             </div>
@@ -209,6 +250,44 @@ function App() {
                 </div>
               </div>
             )}
+
+          {/* Attack Simulation — full width */}
+          {simData?.weakest_user && (
+            <div className="panel panel-full animate-fade-in-up stagger-5">
+              <div className="panel-header">
+                <div className="panel-title-group">
+                  <span className="panel-icon">⚔️</span>
+                  <span className="panel-title">
+                    Attack Simulation — {simData.weakest_user.user}
+                  </span>
+                </div>
+                <span className="panel-badge">
+                  {simData.weakest_user.max_depth} steps
+                </span>
+              </div>
+              <div className="panel-body no-padding panel-scroll">
+                <AttackSimulationPanel user={simData.weakest_user.user} />
+              </div>
+            </div>
+          )}
+
+          {/* Remediation — full width */}
+          {simData?.weakest_user && (
+            <div className="panel panel-full animate-fade-in-up stagger-5">
+              <div className="panel-header">
+                <div className="panel-title-group">
+                  <span className="panel-icon">🛠️</span>
+                  <span className="panel-title">
+                    Remediation Suggestions — {simData.weakest_user.user}
+                  </span>
+                </div>
+                <span className="risk-badge critical">ACTION REQUIRED</span>
+              </div>
+              <div className="panel-body no-padding panel-scroll">
+                <RemediationPanel user={simData.weakest_user.user} />
+              </div>
+            </div>
+          )}
         </div>
       </main>
     </div>
