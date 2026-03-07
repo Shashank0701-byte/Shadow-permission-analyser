@@ -1,4 +1,4 @@
-from app.graph.queries import find_escalation_paths
+from app.analysis.escalation import find_escalation_paths
 
 paths = find_escalation_paths("Intern_A")
 
