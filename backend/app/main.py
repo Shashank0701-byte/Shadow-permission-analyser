@@ -1,13 +1,13 @@
-import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.core.config import settings
 from app.api.graph_routes import router as graph_router
 
 app = FastAPI()
 
 # CORS CONFIGURATION
-origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173").split(",")
+origins = settings.allowed_origins.split(",")
 
 app.add_middleware(
     CORSMiddleware,
