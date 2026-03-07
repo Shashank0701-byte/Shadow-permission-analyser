@@ -1,42 +1,173 @@
+"""Cypher query helpers for the IAM permission graph.
+
+All functions return **serialisable dicts / lists** that can be passed
+straight into a FastAPI JSON response.
+
+Query optimisation notes
+------------------------
+* Graph-builder creates **indexes** on ``User.name``, ``Role.name`` and
+  ``Resource.name``, so ``MATCH (u:User {name: $user})`` resolves via
+  index look-up rather than a full label scan.
+* Variable-length patterns ``[:ASSIGNED|ASSUME*]`` leverage the index on
+  the *starting* node and then traverse relationships — this is the most
+  efficient approach for privilege-escalation path detection.
+"""
+
 from app.core.database import get_session
 
 
-def get_user_permission_paths(user):
-    """Return raw privilege-escalation paths from Neo4j for a given user.
+# ---------------------------------------------------------------------------
+# Escalation / path queries
+# ---------------------------------------------------------------------------
 
-    This is a data-access helper — it runs the Cypher query and returns
-    the raw Neo4j path objects.  Any further analysis (filtering,
-    scoring, etc.) belongs in the analysis layer.
+def get_user_permission_paths(user: str) -> list[dict]:
+    """Return all privilege-escalation paths from *user* to any resource.
+
+    Each returned dict contains:
+    * ``nodes``  — ordered list of nodes in the path
+    * ``edges``  — ordered list of relationship types
+    * ``depth``  — number of hops
+    * ``resource`` — target resource metadata (name + sensitivity)
     """
     query = """
-    MATCH path =
-    (u:User {name:$user})
-    -[:ASSIGNED|ASSUME*]->
-    (r:Role)-[:ACCESS]->
-    (res:Resource)
-    RETURN path
+    MATCH path = (u:User {name: $user})
+                 -[:ASSIGNED|ASSUME*]->
+                 (r:Role)-[:ACCESS]->
+                 (res:Resource)
+    RETURN path,
+           length(path)       AS depth,
+           res.name            AS resource_name,
+           res.sensitivity     AS sensitivity
+    """
+
+    paths = []
+    with get_session() as session:
+        for record in session.run(query, user=user):
+            p = record["path"]
+            nodes = [
+                {
+                    "id": node.element_id,
+                    "label": list(node.labels)[0],
+                    "name": node.get("name"),
+                    "sensitivity": node.get("sensitivity"),
+                }
+                for node in p.nodes
+            ]
+            edges = [rel.type for rel in p.relationships]
+            paths.append({
+                "nodes": nodes,
+                "edges": edges,
+                "depth": record["depth"],
+                "resource": {
+                    "name": record["resource_name"],
+                    "sensitivity": record["sensitivity"],
+                },
+            })
+    return paths
+
+
+def get_shortest_escalation_path(user: str) -> dict | None:
+    """Return the shortest privilege-escalation path for *user*, or None."""
+    query = """
+    MATCH (u:User {name: $user}), (res:Resource)
+    MATCH path = shortestPath(
+        (u)-[:ASSIGNED|ASSUME|ACCESS*]->(res)
+    )
+    RETURN path,
+           length(path)   AS depth,
+           res.name        AS resource_name,
+           res.sensitivity AS sensitivity
+    ORDER BY depth
+    LIMIT 1
     """
 
     with get_session() as session:
-        result = session.run(query, user=user)
-        return [record["path"] for record in result]
+        record = session.run(query, user=user).single()
+        if record is None:
+            return None
+
+        p = record["path"]
+        nodes = [
+            {
+                "id": node.element_id,
+                "label": list(node.labels)[0],
+                "name": node.get("name"),
+                "sensitivity": node.get("sensitivity"),
+            }
+            for node in p.nodes
+        ]
+        edges = [rel.type for rel in p.relationships]
+        return {
+            "nodes": nodes,
+            "edges": edges,
+            "depth": record["depth"],
+            "resource": {
+                "name": record["resource_name"],
+                "sensitivity": record["sensitivity"],
+            },
+        }
 
 
-def get_full_graph():
-    """Return all nodes and edges in the graph for visualization.
+# ---------------------------------------------------------------------------
+# Blast radius queries
+# ---------------------------------------------------------------------------
 
-    Transforms raw Neo4j records into a serializable dict with
-    ``nodes`` and ``links`` lists suitable for a force-directed graph.
+def get_reachable_resources(user: str) -> list[dict]:
+    """Return every resource reachable from *user* with path length.
+
+    Used by the blast-radius analysis to compute impact when a user is
+    compromised.
     """
+    query = """
+    MATCH path = (u:User {name: $user})
+                 -[:ASSIGNED|ASSUME*]->
+                 (r:Role)-[:ACCESS]->
+                 (res:Resource)
+    RETURN DISTINCT res.name        AS resource_name,
+                    res.sensitivity AS sensitivity,
+                    min(length(path)) AS min_path_length
+    """
+
+    resources = []
+    with get_session() as session:
+        for record in session.run(query, user=user):
+            resources.append({
+                "name": record["resource_name"],
+                "sensitivity": record["sensitivity"],
+                "min_path_length": record["min_path_length"],
+            })
+    return resources
+
+
+def get_sensitive_resources(min_sensitivity: int = 4) -> list[dict]:
+    """Return resources whose sensitivity is at or above the threshold."""
+    query = """
+    MATCH (res:Resource)
+    WHERE res.sensitivity >= $min_sensitivity
+    RETURN res.name AS name, res.sensitivity AS sensitivity
+    ORDER BY res.sensitivity DESC
+    """
+
+    with get_session() as session:
+        return [
+            {"name": r["name"], "sensitivity": r["sensitivity"]}
+            for r in session.run(query, min_sensitivity=min_sensitivity)
+        ]
+
+
+# ---------------------------------------------------------------------------
+# Full-graph visualisation
+# ---------------------------------------------------------------------------
+
+def get_full_graph() -> dict:
+    """Return all nodes and edges for the force-directed graph visualisation."""
     query = "MATCH (n)-[r]->(m) RETURN n, r, m"
 
     nodes = {}
     edges = []
 
     with get_session() as session:
-        result = session.run(query)
-
-        for record in result:
+        for record in session.run(query):
             n = record["n"]
             m = record["m"]
             r = record["r"]
@@ -46,6 +177,7 @@ def get_full_graph():
                     "id": node.element_id,
                     "label": list(node.labels)[0],
                     "name": node.get("name"),
+                    "sensitivity": node.get("sensitivity"),
                 }
 
             edges.append({
