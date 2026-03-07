@@ -32,7 +32,15 @@ def simulate(
     num_resources: int = Query(3, ge=1, le=20, description="Extra random resources"),
     seed: int | None = Query(None, description="RNG seed for reproducibility"),
 ):
-    """Generate a simulated IAM dataset, load it into Neo4j, and return it."""
+    """Generate a simulated IAM dataset, rebuild the graph, and run analysis.
+
+    Steps:
+    1. Clear existing graph
+    2. Generate new IAM dataset
+    3. Rebuild graph in Neo4j
+    4. Run escalation analysis on every user
+    5. Identify the weakest user (highest risk score)
+    """
     try:
         dataset = generate_dataset(
             num_extra_users=num_users,
@@ -42,9 +50,33 @@ def simulate(
         )
         clear_graph()
         build_graph(dataset)
+
+        # --- Run escalation analysis on every user ---
+        user_analyses = []
+        for user in dataset["users"]:
+            result = find_escalation_paths(user)
+            user_analyses.append(result)
+
+        # --- Find the weakest user (highest overall risk score) ---
+        weakest_user = None
+        if user_analyses:
+            weakest = max(user_analyses, key=lambda a: a.get("overall_risk_score", 0))
+            if weakest.get("overall_risk_score", 0) > 0:
+                weakest_user = {
+                    "user": weakest["user"],
+                    "risk_level": weakest["risk_level"],
+                    "overall_risk_score": weakest["overall_risk_score"],
+                    "total_escalation_paths": weakest["total_paths"],
+                    "max_depth": weakest["max_depth"],
+                    "sensitive_targets": weakest["sensitive_targets"],
+                }
+
+        # --- Run centrality analysis ---
+        centrality_result = find_critical_hubs(hub_threshold=0.1)
+
         return {
             "status": "ok",
-            "message": "Simulation loaded into Neo4j.",
+            "message": "Simulation loaded, graph rebuilt, and analysis complete.",
             "dataset_summary": {
                 "users": len(dataset["users"]),
                 "roles": len(dataset["roles"]),
@@ -53,6 +85,9 @@ def simulate(
                 "assume_relations": len(dataset["assume"]),
                 "permissions": len(dataset["permissions"]),
             },
+            "weakest_user": weakest_user,
+            "user_analyses": user_analyses,
+            "centrality": centrality_result,
         }
     except Exception as e:
         traceback.print_exc()
