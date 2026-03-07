@@ -6,6 +6,7 @@ POST /simulate           — generate & load a simulated IAM dataset
 GET  /graph              — full graph for visualisation
 GET  /escalation/{user}  — privilege-escalation analysis
 GET  /blast-radius/{user} — blast-radius analysis
+GET  /centrality          — betweenness centrality & critical privilege hubs
 """
 
 import traceback
@@ -17,6 +18,7 @@ from app.graph.graph_builder import clear_graph, build_graph
 from app.graph.queries import get_full_graph
 from app.analysis.escalation import find_escalation_paths
 from app.analysis.blast_radius import compute_blast_radius
+from app.analysis.centrality import find_critical_hubs
 
 router = APIRouter()
 
@@ -100,6 +102,23 @@ def blast_radius(user: str):
                 "message": f"No reachable resources found for user '{user}'.",
             }
         return result
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── GET /centrality ─────────────────────────────────────────────────────────
+
+@router.get("/centrality")
+def centrality(
+    hub_threshold: float = Query(
+        0.1, ge=0.0, le=1.0,
+        description="Min betweenness centrality to flag a Role as a critical hub",
+    ),
+):
+    """Return betweenness centrality scores and critical privilege hubs."""
+    try:
+        return find_critical_hubs(hub_threshold=hub_threshold)
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
