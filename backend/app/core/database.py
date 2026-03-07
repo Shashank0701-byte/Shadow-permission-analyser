@@ -1,16 +1,9 @@
-import os
 from neo4j import GraphDatabase
-from dotenv import load_dotenv
-
-load_dotenv()
-
-URI = os.getenv("NEO4J_URI")
-USERNAME = os.getenv("NEO4J_USER")
-PASSWORD = os.getenv("NEO4J_PASSWORD")
+from app.core.config import settings
 
 driver = GraphDatabase.driver(
-    URI,
-    auth=(USERNAME, PASSWORD)
+    settings.neo4j_uri,
+    auth=(settings.neo4j_user, settings.neo4j_password),
 )
 
 def get_session():

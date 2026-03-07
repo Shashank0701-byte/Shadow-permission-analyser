@@ -1,46 +1,16 @@
-from fastapi import APIRouter
-from app.core.database import get_session
+import traceback
+
+from fastapi import APIRouter, HTTPException
+from app.graph.queries import get_full_graph
 
 router = APIRouter()
 
+
 @router.get("/graph")
 def get_graph():
-
-    query = """
-    MATCH (n)-[r]->(m)
-    RETURN n,r,m
-    """
-
-    nodes = {}
-    edges = []
-
-    with get_session() as session:
-        result = session.run(query)
-
-        for record in result:
-            n = record["n"]
-            m = record["m"]
-            r = record["r"]
-
-            nodes[n.id] = {
-                "id": n.id,
-                "label": list(n.labels)[0],
-                "name": n.get("name")
-            }
-
-            nodes[m.id] = {
-                "id": m.id,
-                "label": list(m.labels)[0],
-                "name": m.get("name")
-            }
-
-            edges.append({
-                "source": n.id,
-                "target": m.id,
-                "type": r.type
-            })
-
-    return {
-        "nodes": list(nodes.values()),
-        "links": edges
-    }
+    """Return the full permission graph for visualization."""
+    try:
+        return get_full_graph()
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
