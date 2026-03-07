@@ -5,12 +5,15 @@ const NODE_COLORS = {
   User: "#60a5fa",
   Role: "#34d399",
   Resource: "#fbbf24",
+  Policy: "#c084fc",
 };
 
 const EDGE_COLORS = {
   ASSIGNED: "rgba(96, 165, 250, 0.35)",
   ASSUME: "rgba(52, 211, 153, 0.35)",
   ACCESS: "rgba(251, 191, 36, 0.35)",
+  HAS_ROLE: "rgba(96, 165, 250, 0.35)",
+  HAS_POLICY: "rgba(192, 132, 252, 0.35)",
 };
 
 export default function GraphView({ graphData, graphKey }) {
@@ -18,7 +21,7 @@ export default function GraphView({ graphData, graphKey }) {
 
   const paintNode = useCallback((node, ctx) => {
     const color = NODE_COLORS[node.label] || "#64748b";
-    const size = node.label === "Resource" ? 7 : node.label === "Role" ? 6 : 5;
+    const size = node.label === "Resource" || node.label === "Policy" ? 7 : node.label === "Role" ? 6 : 5;
 
     // Outer glow
     ctx.beginPath();
@@ -46,8 +49,14 @@ export default function GraphView({ graphData, graphKey }) {
   }, []);
 
   const paintLink = useCallback((link, ctx) => {
-    ctx.strokeStyle = EDGE_COLORS[link.type] || "rgba(100,100,100,0.2)";
-    ctx.lineWidth = 1.2;
+    // If it's an escalation edge, glow with a danger color
+    if (link.is_escalation) {
+      ctx.strokeStyle = "rgba(244, 63, 94, 0.85)";
+      ctx.lineWidth = 2.5;
+    } else {
+      ctx.strokeStyle = EDGE_COLORS[link.type] || "rgba(100,100,100,0.2)";
+      ctx.lineWidth = 1.2;
+    }
     ctx.beginPath();
     ctx.moveTo(link.source.x, link.source.y);
     ctx.lineTo(link.target.x, link.target.y);

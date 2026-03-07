@@ -161,29 +161,45 @@ def get_sensitive_resources(min_sensitivity: int = 4) -> list[dict]:
 
 def get_full_graph() -> dict:
     """Return all nodes and edges for the force-directed graph visualisation."""
-    query = "MATCH (n)-[r]->(m) RETURN n, r, m"
+    query_all = "MATCH (n)-[r]->(m) RETURN n, r, m"
+    query_escalation = """
+    MATCH path = (u:User)-[:ASSIGNED|ASSUME*]->(r:Role)-[:ACCESS]->(res:Resource)
+    RETURN path
+    ORDER BY length(path) ASC
+    LIMIT 1
+    """
 
     nodes = {}
     edges = []
+    escalation_edge_ids = set()
 
     with get_session() as session:
-        for record in session.run(query):
+        # Identify all edges that are part of an escalation path
+        for record in session.run(query_escalation):
+            for rel in record["path"].relationships:
+                escalation_edge_ids.add(rel.element_id)
+
+        # Build nodes
+        for record in session.run("MATCH (n) RETURN n"):
+            node = record["n"]
+            nodes[node.element_id] = {
+                "id": node.element_id,
+                "label": list(node.labels)[0] if node.labels else "Unknown",
+                "name": node.get("name"),
+                "sensitivity": node.get("sensitivity"),
+            }
+
+        # Build edges
+        for record in session.run("MATCH (n)-[r]->(m) RETURN n, r, m"):
             n = record["n"]
             m = record["m"]
             r = record["r"]
-
-            for node in (n, m):
-                nodes[node.element_id] = {
-                    "id": node.element_id,
-                    "label": list(node.labels)[0],
-                    "name": node.get("name"),
-                    "sensitivity": node.get("sensitivity"),
-                }
 
             edges.append({
                 "source": n.element_id,
                 "target": m.element_id,
                 "type": r.type,
+                "is_escalation": r.element_id in escalation_edge_ids
             })
 
     return {"nodes": list(nodes.values()), "links": edges}
