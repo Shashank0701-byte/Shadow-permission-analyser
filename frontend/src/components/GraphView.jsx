@@ -5,11 +5,27 @@ export default function GraphView() {
 
   const [graphData, setGraphData] = useState({ nodes: [], links: [] });
 
-  useEffect(() => {
-    fetch("http://localhost:8000/graph")
-      .then(res => res.json())
-      .then(data => setGraphData(data));
-  }, []);
+  const API_BASE = import.meta.env.VITE_API_URL;
+
+useEffect(() => {
+  const loadGraph = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/graph`);
+
+      if (!res.ok) {
+        throw new Error(`API error: ${res.status}`);
+      }
+
+      const data = await res.json();
+      setGraphData(data);
+
+    } catch (err) {
+      console.error("Graph fetch failed:", err);
+    }
+  };
+
+  loadGraph();
+}, []);
 
   const nodeColor = (node) => {
     if (node.label === "User") return "#1f77b4";
