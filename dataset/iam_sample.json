@@ -1,0 +1,17 @@
+{
+  "users": ["Intern_A", "Dev_John"],
+  "roles": ["InternRole", "DevRole", "DBAccessRole"],
+  "resources": [
+    {"name": "ProductionDB", "sensitivity": 5}
+  ],
+  "assignments": [
+    ["Intern_A", "InternRole"]
+  ],
+  "assume": [
+    ["InternRole", "DevRole"],
+    ["DevRole", "DBAccessRole"]
+  ],
+  "permissions": [
+    ["DBAccessRole", "ProductionDB"]
+  ]
+}
