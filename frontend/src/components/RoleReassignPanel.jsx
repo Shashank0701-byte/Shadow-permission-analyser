@@ -99,7 +99,11 @@ export default function RoleReassignPanel({ graphData, onReassigned }) {
         data = await res.json();
       }
 
-      setResult({ single: data, isTemp: duration !== "0" });
+      if (data.after && !data.user_analysis && typeof data.after === "object") {
+        setResult({ batch: data, isTemp: duration !== "0" });
+      } else {
+        setResult({ single: data, isTemp: duration !== "0" });
+      }
       setSelectedUser("");
       setOldRole("");
       setNewRole("");

@@ -118,7 +118,7 @@ def build_graph(data: dict):
                     """
                     MATCH (u:User {name:$user})
                     MATCH (r:Role {name:$role})
-                    MERGE (u)-[:HAS_ROLE]->(r)
+                    MERGE (u)-[:ASSIGNED]->(r)
                     """,
                     user=rel["user"],
                     role=rel["role"],

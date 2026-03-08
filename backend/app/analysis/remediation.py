@@ -116,14 +116,16 @@ def generate_remediation(user: str) -> dict:
                     "description": (
                         f"Role '{source}' has direct access to sensitive "
                         f"resource '{target}' (sensitivity: {resource.get('sensitivity')}). "
-                        f"Replace broad policies like AdministratorAccess with "
-                        f"scoped, least-privilege permissions."
+                        f"First, enumerate the role's attached and inline policies to identify "
+                        f"the overly permissive policy. Then detach it and replace it with scoped permissions."
                     ),
                     "aws_cli": (
-                        f"# Detach overly broad policy\n"
+                        f"# 1. Find the overly permissive policy\n"
+                        f"aws iam list-attached-role-policies --role-name {source}\n\n"
+                        f"# 2. Detach it (replace {{policy_arn}} with the actual ARN)\n"
                         f"aws iam detach-role-policy --role-name {source} \\\n"
-                        f"  --policy-arn arn:aws:iam::aws:policy/AdministratorAccess\n\n"
-                        f"# Attach a scoped policy instead\n"
+                        f"  --policy-arn {{policy_arn}}\n\n"
+                        f"# 3. Attach a scoped policy instead\n"
                         f"aws iam attach-role-policy --role-name {source} \\\n"
                         f"  --policy-arn arn:aws:iam::aws:policy/ReadOnlyAccess"
                     ),
@@ -209,9 +211,11 @@ def _generate_fix_command(edge: dict) -> str:
         )
     elif edge["type"] == "ACCESS":
         return (
-            f"# Detach the overly permissive policy from {edge['source']}\n"
+            f"# 1. Identify which policy grants access\n"
+            f"aws iam list-attached-role-policies --role-name {edge['source']}\n\n"
+            f"# 2. Detach the overly permissive policy from {edge['source']}\n"
             f"aws iam detach-role-policy --role-name {edge['source']} \\\n"
-            f"  --policy-arn arn:aws:iam::aws:policy/AdministratorAccess"
+            f"  --policy-arn {{policy_arn}}"
         )
     else:
         return f"# Review and restrict the {edge['type']} relationship between {edge['source']} and {edge['target']}"

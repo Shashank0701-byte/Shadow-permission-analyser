@@ -16,6 +16,14 @@ const EDGE_COLORS = {
   HAS_POLICY: "rgba(192, 132, 252, 0.35)",
 };
 
+const hexToRgba = (hex, alpha) => {
+  if (!hex.startsWith('#')) return hex;
+  const r = parseInt(hex.slice(1, 3), 16);
+  const g = parseInt(hex.slice(3, 5), 16);
+  const b = parseInt(hex.slice(5, 7), 16);
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+};
+
 export default function GraphView({ graphData, graphKey }) {
   const fgRef = useRef();
 
@@ -26,8 +34,7 @@ export default function GraphView({ graphData, graphKey }) {
     // Outer glow
     ctx.beginPath();
     ctx.arc(node.x, node.y, size + 3, 0, 2 * Math.PI);
-    ctx.fillStyle =
-      color.replace(")", ", 0.15)").replace("rgb", "rgba");
+    ctx.fillStyle = hexToRgba(color, 0.15);
     ctx.fill();
 
     // Node circle

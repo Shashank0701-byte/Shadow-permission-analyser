@@ -101,7 +101,7 @@
   color: white;
   border: none;
   border-radius: var(--radius-sm);
-  font-family: 'Inter', sans-serif;
+  font-family: Inter, sans-serif;
   font-size: 0.8rem;
   font-weight: 600;
   cursor: pointer;
@@ -154,7 +154,14 @@
   padding: 1.1rem 1.25rem;
   transition: all 0.3s ease;
   opacity: 0;
-  animation: fadeInUp 0.4s ease-out forwards;
+  animation: fade-in-up 0.4s ease-out forwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .stat-card {
+    animation: none;
+    opacity: 1;
+  }
 }
 
 .stat-card:hover {
@@ -221,7 +228,14 @@
   overflow: hidden;
   transition: all 0.3s ease;
   opacity: 0;
-  animation: fadeInUp 0.5s ease-out forwards;
+  animation: fade-in-up 0.5s ease-out forwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .panel {
+    animation: none;
+    opacity: 1;
+  }
 }
 
 .panel:hover {
@@ -326,8 +340,7 @@
   border: 1px solid rgba(244, 63, 94, 0.2);
   border-radius: var(--radius-md);
   padding: 1.25rem;
-  animation: borderGlow 3s ease-in-out infinite;
-  border-color: rgba(244, 63, 94, 0.3);
+  animation: border-glow 3s ease-in-out infinite;
 }
 
 .weakest-user-header {
