@@ -87,13 +87,7 @@ def ingest_aws():
     """Load real AWS IAM dataset into Neo4j and return summary."""
     try:
         # Fetch Live AWS IAM Data via Boto3!
-        try:
-            dataset = fetch_live_aws_iam_data()
-        except Exception as e:
-            # Fallback for hackathon demo if AWS credentials fail
-            print(f"Failed to fetch live AWS: {e}. Falling back to pre-exported sample data.")
-            dataset_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../dataset/aws_iam_data.json"))
-            dataset = load_dataset(dataset_path)
+        dataset = fetch_live_aws_iam_data()
 
         clear_graph()
         build_graph(dataset)
@@ -230,3 +224,503 @@ def remediation(user: str):
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── POST /reassign-role ────────────────────────────────────────────────────
+
+@router.post("/reassign-role")
+def reassign_role(
+    user: str = Query(..., description="User to reassign"),
+    old_role: str = Query(None, description="Current role to remove (optional)"),
+    new_role: str = Query(..., description="New role to assign"),
+):
+    """Reassign a user to a different role in LIVE AWS IAM + Neo4j.
+
+    Steps:
+    1. Capture the user's current risk score (before)
+    2. Modify real AWS trust policies via boto3
+    3. Re-ingest fresh AWS data
+    4. Rebuild Neo4j graph from verified AWS state
+    5. Re-run analysis (after)
+    6. Return before/after comparison
+    """
+    import boto3
+    import json
+
+    try:
+        iam = boto3.client("iam")
+        sts = boto3.client("sts")
+        account_id = sts.get_caller_identity()["Account"]
+
+        # --- Before: capture current risk ---
+        before_analysis = find_escalation_paths(user)
+
+        # --- Determine if user is a User or Role (for ARN construction) ---
+        # Check if 'user' exists as an IAM user
+        is_iam_user = False
+        try:
+            iam.get_user(UserName=user)
+            is_iam_user = True
+        except iam.exceptions.NoSuchEntityException:
+            is_iam_user = False
+
+        if is_iam_user:
+            user_arn = f"arn:aws:iam::{account_id}:user/{user}"
+        else:
+            user_arn = f"arn:aws:iam::{account_id}:role/{user}"
+
+        # --- Step 1: Remove user from old role's trust policy ---
+        if old_role:
+            try:
+                old_role_data = iam.get_role(RoleName=old_role)["Role"]
+                old_trust = old_role_data["AssumeRolePolicyDocument"]
+
+                # First check if the user is actually in this role's trust policy
+                user_found_in_old_role = False
+                for stmt in old_trust.get("Statement", []):
+                    principal_aws = stmt.get("Principal", {}).get("AWS", "")
+                    if isinstance(principal_aws, str) and principal_aws == user_arn:
+                        user_found_in_old_role = True
+                    elif isinstance(principal_aws, list) and user_arn in principal_aws:
+                        user_found_in_old_role = True
+
+                if user_found_in_old_role:
+                    # Filter out statements that grant this user access
+                    new_statements = []
+                    for stmt in old_trust.get("Statement", []):
+                        principal_aws = stmt.get("Principal", {}).get("AWS", "")
+                        if isinstance(principal_aws, str):
+                            if principal_aws != user_arn:
+                                new_statements.append(stmt)
+                        elif isinstance(principal_aws, list):
+                            filtered = [p for p in principal_aws if p != user_arn]
+                            if filtered:
+                                stmt["Principal"]["AWS"] = filtered if len(filtered) > 1 else filtered[0]
+                                new_statements.append(stmt)
+
+                    if new_statements:
+                        old_trust["Statement"] = new_statements
+                        iam.update_assume_role_policy(
+                            RoleName=old_role,
+                            PolicyDocument=json.dumps(old_trust),
+                        )
+                    else:
+                        placeholder = {
+                            "Version": "2012-10-17",
+                            "Statement": [{
+                                "Effect": "Deny",
+                                "Principal": {"AWS": "*"},
+                                "Action": "sts:AssumeRole",
+                            }],
+                        }
+                        iam.update_assume_role_policy(
+                            RoleName=old_role,
+                            PolicyDocument=json.dumps(placeholder),
+                        )
+                # else: user not in old role — skip removal silently
+            except Exception as e:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Failed to update trust policy on {old_role}: {str(e)}",
+                )
+
+        # --- Step 2: Add user to new role's trust policy ---
+        try:
+            new_role_data = iam.get_role(RoleName=new_role)["Role"]
+            new_trust = new_role_data["AssumeRolePolicyDocument"]
+
+            # Check if user is already in the trust policy
+            already_present = False
+            for stmt in new_trust.get("Statement", []):
+                principal_aws = stmt.get("Principal", {}).get("AWS", "")
+                if isinstance(principal_aws, str) and principal_aws == user_arn:
+                    already_present = True
+                elif isinstance(principal_aws, list) and user_arn in principal_aws:
+                    already_present = True
+
+            if not already_present:
+                # Remove any Deny placeholder statements left from previous removals
+                new_trust["Statement"] = [
+                    s for s in new_trust["Statement"]
+                    if s.get("Effect") != "Deny"
+                ]
+                # Add a new statement granting this user access
+                new_trust["Statement"].append({
+                    "Effect": "Allow",
+                    "Principal": {"AWS": user_arn},
+                    "Action": "sts:AssumeRole",
+                })
+                iam.update_assume_role_policy(
+                    RoleName=new_role,
+                    PolicyDocument=json.dumps(new_trust),
+                )
+        except Exception as e:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Failed to update trust policy on {new_role}: {str(e)}",
+            )
+
+        # --- Step 3: Re-ingest fresh AWS data & rebuild graph ---
+        dataset = fetch_live_aws_iam_data()
+        clear_graph()
+        build_graph(dataset)
+
+        # --- Step 4: Re-run analysis on verified data ---
+        after_analysis = find_escalation_paths(user)
+        centrality_result = find_critical_hubs(hub_threshold=0.1)
+
+        # --- Build comparison ---
+        risk_delta = after_analysis["overall_risk_score"] - before_analysis["overall_risk_score"]
+
+        return {
+            "status": "ok",
+            "message": f"AWS IAM updated — {user}: {old_role or '(none)'} → {new_role}",
+            "aws_changes": {
+                "removed_from": old_role,
+                "added_to": new_role,
+                "account_id": account_id,
+            },
+            "before": {
+                "risk_score": before_analysis["overall_risk_score"],
+                "risk_level": before_analysis["risk_level"],
+                "total_paths": before_analysis["total_paths"],
+            },
+            "after": {
+                "risk_score": after_analysis["overall_risk_score"],
+                "risk_level": after_analysis["risk_level"],
+                "total_paths": after_analysis["total_paths"],
+            },
+            "risk_delta": round(risk_delta, 2),
+            "risk_increased": risk_delta > 0,
+            "user_analysis": after_analysis,
+            "centrality": centrality_result,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── POST /reassign-roles-batch ─────────────────────────────────────────────
+
+from pydantic import BaseModel
+from typing import List, Optional
+
+class RoleChange(BaseModel):
+    user: str
+    old_role: Optional[str] = None
+    new_role: str
+
+class BatchReassignRequest(BaseModel):
+    changes: List[RoleChange]
+
+@router.post("/reassign-roles-batch")
+def reassign_roles_batch(req: BatchReassignRequest):
+    """Apply multiple role reassignments to live AWS IAM in one batch.
+
+    1. Capture before state (risk scores for all affected users)
+    2. Apply all trust policy changes to AWS
+    3. Single re-ingestion from AWS
+    4. Single graph rebuild
+    5. Re-run analysis
+    6. Return before/after comparison
+    """
+    import boto3
+    import json
+
+    if not req.changes:
+        raise HTTPException(status_code=400, detail="No changes provided")
+
+    try:
+        iam = boto3.client("iam")
+        sts = boto3.client("sts")
+        account_id = sts.get_caller_identity()["Account"]
+
+        applied = []
+        errors = []
+
+        # --- Before: capture risk for all affected users ---
+        affected_users = list({c.user for c in req.changes})
+        before_scores = {}
+        for u in affected_users:
+            try:
+                analysis = find_escalation_paths(u)
+                before_scores[u] = {
+                    "risk_score": analysis["overall_risk_score"],
+                    "risk_level": analysis["risk_level"],
+                    "total_paths": analysis["total_paths"],
+                }
+            except Exception:
+                before_scores[u] = {"risk_score": 0, "risk_level": "LOW", "total_paths": 0}
+
+        # --- Apply each change to AWS ---
+        for change in req.changes:
+            try:
+                # Determine ARN
+                is_iam_user = False
+                try:
+                    iam.get_user(UserName=change.user)
+                    is_iam_user = True
+                except iam.exceptions.NoSuchEntityException:
+                    pass
+
+                user_arn = f"arn:aws:iam::{account_id}:{'user' if is_iam_user else 'role'}/{change.user}"
+
+                # Remove from old role
+                if change.old_role:
+                    try:
+                        old_role_data = iam.get_role(RoleName=change.old_role)["Role"]
+                        old_trust = old_role_data["AssumeRolePolicyDocument"]
+
+                        user_found = any(
+                            (isinstance(s.get("Principal", {}).get("AWS", ""), str) and s["Principal"]["AWS"] == user_arn)
+                            or (isinstance(s.get("Principal", {}).get("AWS", []), list) and user_arn in s["Principal"]["AWS"])
+                            for s in old_trust.get("Statement", [])
+                        )
+
+                        if user_found:
+                            new_stmts = []
+                            for stmt in old_trust.get("Statement", []):
+                                p = stmt.get("Principal", {}).get("AWS", "")
+                                if isinstance(p, str):
+                                    if p != user_arn:
+                                        new_stmts.append(stmt)
+                                elif isinstance(p, list):
+                                    filtered = [x for x in p if x != user_arn]
+                                    if filtered:
+                                        stmt["Principal"]["AWS"] = filtered if len(filtered) > 1 else filtered[0]
+                                        new_stmts.append(stmt)
+
+                            if new_stmts:
+                                old_trust["Statement"] = new_stmts
+                                iam.update_assume_role_policy(RoleName=change.old_role, PolicyDocument=json.dumps(old_trust))
+                            else:
+                                iam.update_assume_role_policy(RoleName=change.old_role, PolicyDocument=json.dumps({
+                                    "Version": "2012-10-17",
+                                    "Statement": [{"Effect": "Deny", "Principal": {"AWS": "*"}, "Action": "sts:AssumeRole"}],
+                                }))
+                    except Exception as e:
+                        errors.append(f"Remove {change.user} from {change.old_role}: {str(e)}")
+
+                # Add to new role
+                try:
+                    new_role_data = iam.get_role(RoleName=change.new_role)["Role"]
+                    new_trust = new_role_data["AssumeRolePolicyDocument"]
+
+                    already = any(
+                        (isinstance(s.get("Principal", {}).get("AWS", ""), str) and s["Principal"]["AWS"] == user_arn)
+                        or (isinstance(s.get("Principal", {}).get("AWS", []), list) and user_arn in s["Principal"]["AWS"])
+                        for s in new_trust.get("Statement", [])
+                    )
+
+                    if not already:
+                        new_trust["Statement"] = [s for s in new_trust["Statement"] if s.get("Effect") != "Deny"]
+                        new_trust["Statement"].append({
+                            "Effect": "Allow",
+                            "Principal": {"AWS": user_arn},
+                            "Action": "sts:AssumeRole",
+                        })
+                        iam.update_assume_role_policy(RoleName=change.new_role, PolicyDocument=json.dumps(new_trust))
+                except Exception as e:
+                    errors.append(f"Add {change.user} to {change.new_role}: {str(e)}")
+                    continue
+
+                applied.append(f"{change.user}: {change.old_role or '(none)'} → {change.new_role}")
+
+            except Exception as e:
+                errors.append(f"{change.user}: {str(e)}")
+
+        # --- Single re-ingestion & rebuild ---
+        dataset = fetch_live_aws_iam_data()
+        clear_graph()
+        build_graph(dataset)
+
+        # --- After: re-run analysis ---
+        after_scores = {}
+        for u in affected_users:
+            try:
+                analysis = find_escalation_paths(u)
+                after_scores[u] = {
+                    "risk_score": analysis["overall_risk_score"],
+                    "risk_level": analysis["risk_level"],
+                    "total_paths": analysis["total_paths"],
+                }
+            except Exception:
+                after_scores[u] = {"risk_score": 0, "risk_level": "LOW", "total_paths": 0}
+
+        centrality_result = find_critical_hubs(hub_threshold=0.1)
+
+        return {
+            "status": "ok",
+            "applied": applied,
+            "errors": errors,
+            "before": before_scores,
+            "after": after_scores,
+            "centrality": centrality_result,
+            "account_id": account_id,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── POST /temporary-access ─────────────────────────────────────────────────
+
+import asyncio
+from datetime import datetime, timedelta
+from fastapi import BackgroundTasks
+
+# Memory store for active temporary sessions
+active_temp_sessions = {}
+
+class TempAccessRequest(BaseModel):
+    user: str
+    old_role: Optional[str] = None
+    new_role: str
+    duration_seconds: int
+
+async def rollback_temp_access(req: TempAccessRequest):
+    """Wait for the duration, then revert the trust policy mapping back to its original state."""
+    await asyncio.sleep(req.duration_seconds)
+
+    # Time's up! Revert state.
+    import boto3
+    import json
+    try:
+        iam = boto3.client("iam")
+        sts = boto3.client("sts")
+        account_id = sts.get_caller_identity()["Account"]
+
+        is_iam_user = False
+        try:
+            iam.get_user(UserName=req.user)
+            is_iam_user = True
+        except iam.exceptions.NoSuchEntityException:
+            pass
+
+        user_arn = f"arn:aws:iam::{account_id}:{'user' if is_iam_user else 'role'}/{req.user}"
+
+        # 1. Remove from new_role (the temporary assignment)
+        try:
+            new_role_data = iam.get_role(RoleName=req.new_role)["Role"]
+            new_trust = new_role_data["AssumeRolePolicyDocument"]
+            new_stmts = []
+            for stmt in new_trust.get("Statement", []):
+                p = stmt.get("Principal", {}).get("AWS", "")
+                if isinstance(p, str):
+                    if p != user_arn: new_stmts.append(stmt)
+                elif isinstance(p, list):
+                    filtered = [x for x in p if x != user_arn]
+                    if filtered:
+                        stmt["Principal"]["AWS"] = filtered if len(filtered) > 1 else filtered[0]
+                        new_stmts.append(stmt)
+            if new_stmts:
+                new_trust["Statement"] = new_stmts
+                iam.update_assume_role_policy(RoleName=req.new_role, PolicyDocument=json.dumps(new_trust))
+            else:
+                iam.update_assume_role_policy(RoleName=req.new_role, PolicyDocument=json.dumps({
+                    "Version": "2012-10-17",
+                    "Statement": [{"Effect": "Deny", "Principal": {"AWS": "*"}, "Action": "sts:AssumeRole"}]
+                }))
+        except Exception as e:
+            print(f"Rollback error (Remove from {req.new_role}):", e)
+
+        # 2. Add back to old_role (if there was one)
+        if req.old_role:
+            try:
+                old_role_data = iam.get_role(RoleName=req.old_role)["Role"]
+                old_trust = old_role_data["AssumeRolePolicyDocument"]
+                already = False
+                for stmt in old_trust.get("Statement", []):
+                    p = stmt.get("Principal", {}).get("AWS", "")
+                    if (isinstance(p, str) and p == user_arn) or (isinstance(p, list) and user_arn in p):
+                        already = True
+                if not already:
+                    old_trust["Statement"] = [s for s in old_trust.get("Statement", []) if s.get("Effect") != "Deny"]
+                    old_trust["Statement"].append({
+                        "Effect": "Allow",
+                        "Principal": {"AWS": user_arn},
+                        "Action": "sts:AssumeRole"
+                    })
+                    iam.update_assume_role_policy(RoleName=req.old_role, PolicyDocument=json.dumps(old_trust))
+            except Exception as e:
+                print(f"Rollback error (Add to {req.old_role}):", e)
+
+        # 3. Complete and trigger graph rebuild
+        if req.user in active_temp_sessions:
+            del active_temp_sessions[req.user]
+        
+        dataset = fetch_live_aws_iam_data()
+        clear_graph()
+        build_graph(dataset)
+        print(f"Rollback completed for {req.user}: {req.new_role} -> {req.old_role or 'None'}")
+    except Exception as e:
+        print("Rollback critical error:", e)
+
+
+@router.post("/temporary-access")
+def grant_temporary_access(req: TempAccessRequest, bg_tasks: BackgroundTasks):
+    """
+    Grants temporary elevated privileged access.
+    Instantly changes live AWS, and schedules an automatic background job to revert it when the time expires.
+    """
+    # 1. We just use the existing reassign_roles_batch logic by importing/calling it or running it inline
+    # Actually, we can reuse the logic easily:
+    try:
+        # Check if already active
+        if req.user in active_temp_sessions:
+            raise HTTPException(status_code=400, detail=f"{req.user} already has an active temporary session")
+
+        # Reuse batch logic
+        # We process this as a single batch with 1 change
+        res = reassign_roles_batch(BatchReassignRequest(changes=[RoleChange(user=req.user, old_role=req.old_role, new_role=req.new_role)]))
+
+        # Schedule the rollback!
+        bg_tasks.add_task(rollback_temp_access, req)
+
+        # Register in active sessions dictionary
+        expires_time = datetime.now() + timedelta(seconds=req.duration_seconds)
+        active_temp_sessions[req.user] = {
+            "expires_at": expires_time.isoformat(),
+            "duration": req.duration_seconds,
+            "old_role": req.old_role,
+            "new_role": req.new_role
+        }
+
+        # Extend our response to include the timer info
+        res["expires_at"] = active_temp_sessions[req.user]["expires_at"]
+        return res
+    except HTTPException:
+        raise
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/temporary-sessions")
+def get_temporary_sessions():
+    """Return list of active temporary time-bound sessions and when they expire"""
+    # Clean up expired ones from dict manually to be safe
+    now = datetime.now()
+    to_delete = []
+    for user, info in active_temp_sessions.items():
+        if now > datetime.fromisoformat(info["expires_at"]):
+            to_delete.append(user)
+    
+    for u in to_delete:
+        del active_temp_sessions[u]
+
+    # Convert sizes for frontend mapping
+    result = []
+    for user, info in active_temp_sessions.items():
+        result.append({
+            "user": user,
+            "old_role": info["old_role"],
+            "new_role": info["new_role"],
+            "expires_at": info["expires_at"],
+            "duration": info["duration"]
+        })
+    return {"sessions": result}
+

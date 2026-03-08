@@ -8,6 +8,7 @@ import EscalationPanel from "./components/EscalationPanel";
 import BlastRadiusPanel from "./components/BlastRadiusPanel";
 import AttackSimulationPanel from "./components/AttackSimulationPanel";
 import RemediationPanel from "./components/RemediationPanel";
+import RoleReassignPanel from "./components/RoleReassignPanel";
 
 const API_BASE = import.meta.env.VITE_API_URL;
 
@@ -92,6 +93,72 @@ function App() {
     loadInitialGraph();
   });
 
+  // Callback when a role is reassigned — refresh graph + panels
+  const handleReassigned = useCallback(async (reassignData) => {
+    // 1. Refresh graph
+    try {
+      const gRes = await fetch(`${API_BASE}/graph`);
+      if (gRes.ok) {
+        const gData = await gRes.json();
+        setGraphData(gData);
+        setGraphKey((k) => k + 1);
+      }
+    } catch (err) {
+      console.error("Graph refresh failed:", err);
+    }
+
+    if (!reassignData || reassignData.status === "expired") {
+      return; // Expiration only needs to trigger a graph refresh
+    }
+
+    // Update sim data with centrality if available
+    if (reassignData.centrality) {
+      setSimData((prev) => ({
+        ...prev,
+        centrality: reassignData.centrality,
+      }));
+    }
+
+    let targetUser = null;
+
+    // Handle payload from single reassignment endpoint vs batch/temporary
+    if (reassignData.user_analysis) {
+      // Single endpoint response format
+      targetUser = reassignData.user_analysis.user;
+      setSimData((prev) => ({
+        ...prev,
+        weakest_user: reassignData.after?.risk_score > 0 ? {
+          user: reassignData.user_analysis.user,
+          risk_level: reassignData.after.risk_level,
+          overall_risk_score: reassignData.after.risk_score,
+          total_escalation_paths: reassignData.after.total_paths,
+          max_depth: reassignData.user_analysis.max_depth,
+          sensitive_targets: reassignData.user_analysis.sensitive_targets,
+        } : prev?.weakest_user,
+      }));
+    } else if (reassignData.after && typeof reassignData.after === "object") {
+      // Batch or temporary endpoint response format (mapping of user -> risk info)
+      const users = Object.keys(reassignData.after);
+      if (users.length > 0) {
+        targetUser = users[0]; // refresh blast radius for at least the first user
+      }
+    }
+
+    // Refresh blast radius for the reassigned user
+    if (targetUser) {
+      try {
+        const bRes = await fetch(
+          `${API_BASE}/blast-radius/${encodeURIComponent(targetUser)}`
+        );
+        if (bRes.ok) {
+          setBlastData(await bRes.json());
+        }
+      } catch (err) {
+        console.error("Blast radius refresh failed:", err);
+      }
+    }
+  }, []);
+
   return (
     <div className="app">
       {/* ── Header ──────────────────────────────────── */}
@@ -170,6 +237,23 @@ function App() {
             </div>
             <div className="panel-body no-padding">
               <GraphView graphData={graphData} graphKey={graphKey} />
+            </div>
+          </div>
+
+          {/* Role Reassignment — full width */}
+          <div className="panel panel-full animate-fade-in-up stagger-2">
+            <div className="panel-header">
+              <div className="panel-title-group">
+                <span className="panel-icon">🔄</span>
+                <span className="panel-title">What-If Role Reassignment</span>
+              </div>
+              <span className="panel-badge">sandbox</span>
+            </div>
+            <div className="panel-body no-padding">
+              <RoleReassignPanel
+                graphData={graphData}
+                onReassigned={handleReassigned}
+              />
             </div>
           </div>
 
