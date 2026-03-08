@@ -234,12 +234,7 @@
   animation: fade-in-up 0.5s ease-out forwards;
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .panel {
-    animation: none;
-    opacity: 1;
-  }
-}
+
 
 .panel:hover {
   border-color: var(--border-glow);
