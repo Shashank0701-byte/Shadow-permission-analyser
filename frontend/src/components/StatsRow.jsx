@@ -8,10 +8,10 @@ export default function StatsRow({ simData, graphData }) {
 
     const stats = [
         { label: "Users", value: ds?.users ?? "—", color: "indigo" },
-        { label: "Roles", value: numRoles || ds?.roles || "—", color: "emerald" },
-        { label: "Resources", value: numResources || ds?.resources || "—", color: "amber" },
-        { label: "Graph Nodes", value: nodes || "—", color: "cyan" },
-        { label: "Graph Edges", value: links || "—", color: "purple" },
+        { label: "Roles", value: numRoles ?? ds?.roles ?? "—", color: "emerald" },
+        { label: "Resources", value: numResources ?? ds?.resources ?? "—", color: "amber" },
+        { label: "Graph Nodes", value: nodes ?? "—", color: "cyan" },
+        { label: "Graph Edges", value: links ?? "—", color: "purple" },
         {
             label: "Risk Score",
             value: simData?.weakest_user?.overall_risk_score ?? "—",

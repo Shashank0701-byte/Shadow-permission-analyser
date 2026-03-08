@@ -118,6 +118,8 @@ def build_graph(data: dict):
                     """
                     MATCH (u:User {name:$user})
                     MATCH (r:Role {name:$role})
+                    OPTIONAL MATCH (u)-[old:HAS_ROLE]->(r)
+                    DELETE old
                     MERGE (u)-[:ASSIGNED]->(r)
                     """,
                     user=rel["user"],

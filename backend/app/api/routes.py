@@ -577,19 +577,22 @@ import boto3
 import traceback
 
 SESSIONS_FILE = os.path.join(os.path.dirname(__file__), "temp_sessions.json")
+_sessions_lock = threading.Lock()
 
 def _load_sessions():
     if os.path.exists(SESSIONS_FILE):
         try:
             with open(SESSIONS_FILE, "r") as f:
                 return json.load(f)
-        except Exception:
-            pass
+        except json.JSONDecodeError as e:
+            print(f"Error decoding sessions: {e}")
     return {}
 
 def _save_sessions(sessions):
-    with open(SESSIONS_FILE, "w") as f:
+    temp_file = SESSIONS_FILE + ".tmp"
+    with open(temp_file, "w") as f:
         json.dump(sessions, f, indent=2)
+    os.replace(temp_file, SESSIONS_FILE)
 
 class TempAccessRequest(BaseModel):
     user: str
@@ -664,8 +667,10 @@ def sync_rollback_temp_access(req_data: dict):
         clear_graph()
         build_graph(dataset)
         print(f"Rollback completed for {req_data['user']}: {req_data['new_role']} -> {req_data.get('old_role') or 'None'}")
+        return True
     except Exception as e:
         print("Rollback critical error:", e)
+        return False
 
 
 def _reconciler_loop():
@@ -673,7 +678,8 @@ def _reconciler_loop():
     from datetime import datetime
     while True:
         try:
-            sessions = _load_sessions()
+            with _sessions_lock:
+                sessions = _load_sessions()
             now = datetime.now()
             expired = []
             
@@ -683,17 +689,24 @@ def _reconciler_loop():
                     
             for user, info in expired:
                 info["user"] = user
-                sync_rollback_temp_access(info)
-                del sessions[user]
-                _save_sessions(sessions)
+                success = sync_rollback_temp_access(info)
+                if success:
+                    with _sessions_lock:
+                        sessions = _load_sessions()
+                        if user in sessions:
+                            del sessions[user]
+                        _save_sessions(sessions)
+                else:
+                    print(f"Rollback failed for {user}, leaving session for retry.")
                 
             time.sleep(5)
         except Exception as e:
             print(f"Reconciler error: {e}")
             time.sleep(5)
 
-# Start background reconciler manually
-threading.Thread(target=_reconciler_loop, daemon=True).start()
+@router.on_event("startup")
+def startup_event():
+    threading.Thread(target=_reconciler_loop, daemon=True).start()
 
 
 @router.post("/temporary-access")
@@ -703,24 +716,27 @@ def grant_temporary_access(req: TempAccessRequest):
     Instantly changes live AWS, and registers a durable session for the background reconciler to revert.
     """
     try:
-        sessions = _load_sessions()
-        
-        # Check if already active
-        if req.user in sessions:
-            raise HTTPException(status_code=400, detail=f"{req.user} already has an active temporary session")
+        with _sessions_lock:
+            sessions = _load_sessions()
+            
+            # Check if already active
+            if req.user in sessions:
+                raise HTTPException(status_code=400, detail=f"{req.user} already has an active temporary session")
 
         # Reuse batch logic
         res = reassign_roles_batch(BatchReassignRequest(changes=[RoleChange(user=req.user, old_role=req.old_role, new_role=req.new_role)]))
 
         # Register durable session
         expires_time = datetime.now() + timedelta(seconds=req.duration_seconds)
-        sessions[req.user] = {
-            "expires_at": expires_time.isoformat(),
-            "duration": req.duration_seconds,
-            "old_role": req.old_role,
-            "new_role": req.new_role
-        }
-        _save_sessions(sessions)
+        with _sessions_lock:
+            sessions = _load_sessions()
+            sessions[req.user] = {
+                "expires_at": expires_time.isoformat(),
+                "duration": req.duration_seconds,
+                "old_role": req.old_role,
+                "new_role": req.new_role
+            }
+            _save_sessions(sessions)
 
         # Extend response
         res["expires_at"] = sessions[req.user]["expires_at"]
@@ -734,18 +750,8 @@ def grant_temporary_access(req: TempAccessRequest):
 @router.get("/temporary-sessions")
 def get_temporary_sessions():
     """Return list of active temporary time-bound sessions and when they expire"""
-    sessions = _load_sessions()
-    now = datetime.now()
-    to_delete = []
-    for user, info in sessions.items():
-        if now > datetime.fromisoformat(info["expires_at"]):
-            to_delete.append(user)
-    
-    for u in to_delete:
-        del sessions[u]
-        
-    if to_delete:
-        _save_sessions(sessions)
+    with _sessions_lock:
+        sessions = _load_sessions()
 
     result = []
     for user, info in sessions.items():

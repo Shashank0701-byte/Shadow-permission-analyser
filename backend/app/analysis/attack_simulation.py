@@ -43,8 +43,9 @@ def generate_attack_steps(user: str) -> dict:
     # Fetch the account ID via sts, fallback if no credentials
     try:
         import boto3
+        import botocore.exceptions
         account_id = boto3.client('sts').get_caller_identity()['Account']
-    except Exception:
+    except (botocore.exceptions.NoCredentialsError, botocore.exceptions.ClientError, botocore.exceptions.EndpointConnectionError):
         account_id = "XXXXXXXXXXXX"
 
     steps = []

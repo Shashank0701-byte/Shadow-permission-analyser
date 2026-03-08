@@ -39,9 +39,10 @@ def setup_vulnerable_aws_env():
 
     iam = boto3.client('iam')
     sts = boto3.client("sts")
+    import botocore.exceptions
     try:
         account_id = sts.get_caller_identity()["Account"]
-    except Exception as e:
+    except (botocore.exceptions.ClientError, botocore.exceptions.BotoCoreError) as e:
         print(f"⚠️ STS Caller identity failed: {e}")
         sys.exit(1)
     

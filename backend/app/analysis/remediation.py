@@ -120,14 +120,19 @@ def generate_remediation(user: str) -> dict:
                         f"the overly permissive policy. Then detach it and replace it with scoped permissions."
                     ),
                     "aws_cli": (
-                        f"# 1. Find the overly permissive policy\n"
-                        f"aws iam list-attached-role-policies --role-name {source}\n\n"
-                        f"# 2. Detach it (replace {{policy_arn}} with the actual ARN)\n"
+                        f"# 1. Find the overly permissive policy (attached and inline)\n"
+                        f"aws iam list-attached-role-policies --role-name {source}\n"
+                        f"aws iam list-role-policies --role-name {source}\n"
+                        f"aws iam get-role-policy --role-name {source} --policy-name {{policy_name}}\n\n"
+                        f"# 2. Detach or delete it (replace placeholders with actual names/ARNs)\n"
                         f"aws iam detach-role-policy --role-name {source} \\\n"
-                        f"  --policy-arn {{policy_arn}}\n\n"
-                        f"# 3. Attach a scoped policy instead\n"
+                        f"  --policy-arn {{policy_arn}}\n"
+                        f"# OR for inline policies:\n"
+                        f"aws iam delete-role-policy --role-name {source} \\\n"
+                        f"  --policy-name {{policy_name}}\n\n"
+                        f"# 3. Attach a scoped policy instead (example pattern)\n"
                         f"aws iam attach-role-policy --role-name {source} \\\n"
-                        f"  --policy-arn arn:aws:iam::aws:policy/ReadOnlyAccess"
+                        f"  --policy-arn arn:aws:iam::<account-id>:policy/{source}-ScopedPolicy"
                     ),
                     "impact": f"Reduces blast radius of {source} compromise",
                 })
@@ -212,10 +217,14 @@ def _generate_fix_command(edge: dict) -> str:
     elif edge["type"] == "ACCESS":
         return (
             f"# 1. Identify which policy grants access\n"
-            f"aws iam list-attached-role-policies --role-name {edge['source']}\n\n"
+            f"aws iam list-attached-role-policies --role-name {edge['source']}\n"
+            f"aws iam list-role-policies --role-name {edge['source']}\n\n"
             f"# 2. Detach the overly permissive policy from {edge['source']}\n"
             f"aws iam detach-role-policy --role-name {edge['source']} \\\n"
-            f"  --policy-arn {{policy_arn}}"
+            f"  --policy-arn {{policy_arn}}\n\n"
+            f"# 3. Attach a replacement scoped policy\n"
+            f"aws iam attach-role-policy --role-name {edge['source']} \\\n"
+            f"  --policy-arn {{replacement_policy_arn}}"
         )
     else:
         return f"# Review and restrict the {edge['type']} relationship between {edge['source']} and {edge['target']}"
