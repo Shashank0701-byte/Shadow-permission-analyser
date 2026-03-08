@@ -51,8 +51,8 @@ export default function EscalationPanel({ data }) {
                                 {u.user}
                             </td>
                             <td>
-                                <span className={`risk-badge ${u.risk_level.toLowerCase()}`}>
-                                    {u.risk_level}
+                                <span className={`risk-badge ${(u.risk_level || "low").toLowerCase()}`}>
+                                    {u.risk_level || "LOW"}
                                 </span>
                             </td>
                             <td>
@@ -88,7 +88,7 @@ export default function EscalationPanel({ data }) {
                                         {firstPath.nodes.map((node, i) => (
                                             <span key={i}>
                                                 <span
-                                                    className={`path-node ${node.label.toLowerCase()}`}
+                                                    className={`path-node ${(node.label || "unknown").toLowerCase()}`}
                                                 >
                                                     {node.name}
                                                 </span>

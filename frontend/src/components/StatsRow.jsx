@@ -3,10 +3,13 @@ export default function StatsRow({ simData, graphData }) {
     const nodes = graphData?.nodes?.length || 0;
     const links = graphData?.links?.length || 0;
 
+    const numRoles = graphData?.nodes?.filter(n => n.label === "Role").length;
+    const numResources = graphData?.nodes?.filter(n => n.label === "Resource").length;
+
     const stats = [
         { label: "Users", value: ds?.users ?? "—", color: "indigo" },
-        { label: "Roles", value: ds?.roles ?? "—", color: "emerald" },
-        { label: "Resources", value: ds?.resources ?? "—", color: "amber" },
+        { label: "Roles", value: numRoles || ds?.roles || "—", color: "emerald" },
+        { label: "Resources", value: numResources || ds?.resources || "—", color: "amber" },
         { label: "Graph Nodes", value: nodes || "—", color: "cyan" },
         { label: "Graph Edges", value: links || "—", color: "purple" },
         {

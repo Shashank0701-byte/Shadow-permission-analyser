@@ -12,16 +12,42 @@ const PRIORITY_COLORS = {
 export default function RemediationPanel({ user }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
 
   useEffect(() => {
     if (!user) return;
     setLoading(true);
-    fetch(`${API_BASE}/remediation/${encodeURIComponent(user)}`)
-      .then((r) => r.json())
+    setError(null);
+    const controller = new AbortController();
+    
+    fetch(`${API_BASE}/remediation/${encodeURIComponent(user)}`, { signal: controller.signal })
+      .then(async (r) => {
+        if (!r.ok) throw new Error(await r.text() || r.statusText);
+        return r.json();
+      })
       .then(setData)
-      .catch(console.error)
-      .finally(() => setLoading(false));
+      .catch((e) => {
+        if (e.name !== 'AbortError') {
+          console.error(e);
+          setError(e.message);
+        }
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setLoading(false);
+      });
+      
+    return () => controller.abort();
   }, [user]);
+
+  if (error) {
+    return (
+      <div className="empty-state">
+        <div className="empty-icon" style={{ color: "var(--accent-rose)" }}>⚠️</div>
+        <div className="empty-title">Remediation Error</div>
+        <div className="empty-desc" style={{ color: "var(--accent-rose)" }}>{error}</div>
+      </div>
+    );
+  }
 
   if (!user) {
     return (

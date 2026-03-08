@@ -22,7 +22,7 @@ export default function BlastRadiusPanel({ data }) {
                 </tr>
             </thead>
             <tbody>
-                {data.affected_resources.map((r) => {
+                {(data?.affected_resources ?? []).map((r) => {
                     const riskClass =
                         r.risk_score >= 8
                             ? "critical"
@@ -112,7 +112,14 @@ export default function BlastRadiusPanel({ data }) {
                                     fontSize: "1rem",
                                     fontWeight: 800,
                                     fontFamily: "'JetBrains Mono', monospace",
-                                    color: data.aggregate_risk_score >= 8 ? "#fb7185" : "#fbbf24",
+                                    color:
+                                        data.aggregate_risk_score >= 8
+                                            ? "#fb7185"
+                                            : data.aggregate_risk_score >= 6
+                                                ? "#fbbf24"
+                                                : data.aggregate_risk_score >= 3
+                                                    ? "#60a5fa"
+                                                    : "#34d399",
                                 }}
                             >
                                 {data.aggregate_risk_score} / 10

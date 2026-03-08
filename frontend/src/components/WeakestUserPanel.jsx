@@ -18,8 +18,8 @@ export default function WeakestUserPanel({ data }) {
                     <div className="weakest-user-label">⚠ Highest Risk Account</div>
                     <div className="weakest-user-name">{data.user}</div>
                 </div>
-                <span className={`risk-badge ${data.risk_level.toLowerCase()}`}>
-                    {data.risk_level}
+                <span className={`risk-badge ${(data.risk_level || "low").toLowerCase()}`}>
+                    {data.risk_level || "LOW"}
                 </span>
             </div>
             <div className="weakest-user-stats">

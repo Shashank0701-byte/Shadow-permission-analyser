@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
 import "./App.css";
 import GraphView from "./components/GraphView";
 import StatsRow from "./components/StatsRow";
@@ -19,6 +19,7 @@ function App() {
   const [loadingScan, setLoadingScan] = useState(false);
   const [loadingAws, setLoadingAws] = useState(false);
   const [graphKey, setGraphKey] = useState(0);
+  const weakestUserRef = useRef(null);
 
   const runSimulation = useCallback(async () => {
     setLoadingScan(true);
@@ -27,9 +28,14 @@ function App() {
       if (!res.ok) throw new Error(`Simulate failed: ${res.status}`);
       const data = await res.json();
       setSimData(data);
+      if (data.weakest_user?.user) {
+        weakestUserRef.current = data.weakest_user.user;
+      }
+
+      const userParams = weakestUserRef.current ? `?highlight_user=${encodeURIComponent(weakestUserRef.current)}` : "";
 
       // Fetch fresh graph
-      const gRes = await fetch(`${API_BASE}/graph`);
+      const gRes = await fetch(`${API_BASE}/graph${userParams}`);
       if (gRes.ok) {
         const gData = await gRes.json();
         setGraphData(gData);
@@ -59,9 +65,14 @@ function App() {
       if (!res.ok) throw new Error(`Ingest failed: ${res.status}`);
       const data = await res.json();
       setSimData(data);
+      if (data.weakest_user?.user) {
+        weakestUserRef.current = data.weakest_user.user;
+      }
+
+      const userParams = weakestUserRef.current ? `?highlight_user=${encodeURIComponent(weakestUserRef.current)}` : "";
 
       // Fetch fresh graph
-      const gRes = await fetch(`${API_BASE}/graph`);
+      const gRes = await fetch(`${API_BASE}/graph${userParams}`);
       if (gRes.ok) {
         const gData = await gRes.json();
         setGraphData(gData);
@@ -78,7 +89,8 @@ function App() {
   // Load initial graph on mount
   const loadInitialGraph = useCallback(async () => {
     try {
-      const gRes = await fetch(`${API_BASE}/graph`);
+      const userParams = weakestUserRef.current ? `?highlight_user=${encodeURIComponent(weakestUserRef.current)}` : "";
+      const gRes = await fetch(`${API_BASE}/graph${userParams}`);
       if (gRes.ok) {
         const data = await gRes.json();
         setGraphData(data);
@@ -89,15 +101,20 @@ function App() {
   }, []);
 
   // Run on mount
-  useState(() => {
+  useEffect(() => {
     loadInitialGraph();
-  });
+  }, [loadInitialGraph]);
 
   // Callback when a role is reassigned — refresh graph + panels
   const handleReassigned = useCallback(async (reassignData) => {
+    if (reassignData && reassignData.user_analysis && reassignData.after?.risk_score > 0) {
+      weakestUserRef.current = reassignData.user_analysis.user;
+    }
+
     // 1. Refresh graph
     try {
-      const gRes = await fetch(`${API_BASE}/graph`);
+      const userParams = weakestUserRef.current ? `?highlight_user=${encodeURIComponent(weakestUserRef.current)}` : "";
+      const gRes = await fetch(`${API_BASE}/graph${userParams}`);
       if (gRes.ok) {
         const gData = await gRes.json();
         setGraphData(gData);
@@ -111,38 +128,86 @@ function App() {
       return; // Expiration only needs to trigger a graph refresh
     }
 
-    // Update sim data with centrality if available
-    if (reassignData.centrality) {
-      setSimData((prev) => ({
-        ...prev,
-        centrality: reassignData.centrality,
-      }));
-    }
-
+    // Update sim data comprehensively
     let targetUser = null;
+    setSimData((prev) => {
+      if (!prev) return prev;
+      const newSimData = { ...prev };
 
-    // Handle payload from single reassignment endpoint vs batch/temporary
-    if (reassignData.user_analysis) {
-      // Single endpoint response format
-      targetUser = reassignData.user_analysis.user;
-      setSimData((prev) => ({
-        ...prev,
-        weakest_user: reassignData.after?.risk_score > 0 ? {
-          user: reassignData.user_analysis.user,
-          risk_level: reassignData.after.risk_level,
-          overall_risk_score: reassignData.after.risk_score,
-          total_escalation_paths: reassignData.after.total_paths,
-          max_depth: reassignData.user_analysis.max_depth,
-          sensitive_targets: reassignData.user_analysis.sensitive_targets,
-        } : prev?.weakest_user,
-      }));
-    } else if (reassignData.after && typeof reassignData.after === "object") {
-      // Batch or temporary endpoint response format (mapping of user -> risk info)
-      const users = Object.keys(reassignData.after);
-      if (users.length > 0) {
-        targetUser = users[0]; // refresh blast radius for at least the first user
+      // 1. Update centrality
+      if (reassignData.centrality) {
+        newSimData.centrality = reassignData.centrality;
       }
-    }
+
+      // 2. Update user_analyses and determine weakest user
+      if (reassignData.user_analysis) {
+        // Single reassignment
+        const ua = reassignData.user_analysis;
+        targetUser = ua.user;
+        const existingIdx = newSimData.user_analyses?.findIndex((u) => u.user === ua.user);
+        if (existingIdx !== undefined && existingIdx >= 0) {
+          newSimData.user_analyses[existingIdx] = ua;
+        } else if (newSimData.user_analyses) {
+          newSimData.user_analyses.push(ua);
+        }
+
+        // Recompute weakest_user from all user_analyses
+        if (newSimData.user_analyses && newSimData.user_analyses.length > 0) {
+          const weakest = [...newSimData.user_analyses].sort((a, b) => (b.overall_risk_score || 0) - (a.overall_risk_score || 0))[0];
+          if (weakest && weakest.overall_risk_score > 0) {
+            newSimData.weakest_user = {
+              user: weakest.user,
+              risk_level: weakest.risk_level,
+              overall_risk_score: weakest.overall_risk_score,
+              total_escalation_paths: weakest.total_paths,
+              max_depth: weakest.max_depth,
+              sensitive_targets: weakest.sensitive_targets,
+            };
+          } else {
+            newSimData.weakest_user = null;
+          }
+        }
+      } else if (reassignData.after && typeof reassignData.after === "object") {
+        // Batch/temporary reassignment
+        const users = Object.keys(reassignData.after);
+        if (users.length > 0) {
+          targetUser = users[0];
+          
+          users.forEach(u => {
+             const afterStats = reassignData.after[u];
+             const existingIdx = newSimData.user_analyses?.findIndex(ua => ua.user === u);
+             if (existingIdx !== undefined && existingIdx >= 0) {
+                // We don't have full path data, but we can update the scores to stop the UI from showing stale data
+                newSimData.user_analyses[existingIdx] = {
+                   ...newSimData.user_analyses[existingIdx],
+                   overall_risk_score: afterStats.risk_score,
+                   risk_level: afterStats.risk_level,
+                   total_paths: afterStats.total_paths
+                };
+             }
+          });
+
+          // Recompute weakest_user from user_analyses
+          if (newSimData.user_analyses && newSimData.user_analyses.length > 0) {
+            const weakest = [...newSimData.user_analyses].sort((a, b) => (b.overall_risk_score || 0) - (a.overall_risk_score || 0))[0];
+            if (weakest && weakest.overall_risk_score > 0) {
+              newSimData.weakest_user = {
+                user: weakest.user,
+                risk_level: weakest.risk_level,
+                overall_risk_score: weakest.overall_risk_score,
+                total_escalation_paths: weakest.total_paths,
+                max_depth: weakest.max_depth,
+                sensitive_targets: weakest.sensitive_targets,
+              };
+            } else {
+              newSimData.weakest_user = null;
+            }
+          }
+        }
+      }
+
+      return newSimData;
+    });
 
     // Refresh blast radius for the reassigned user
     if (targetUser) {
@@ -175,10 +240,10 @@ function App() {
           </div>
 
           <div className="header-actions">
-            <div className="header-status">
+            {/* <div className="header-status">
               <span className="status-dot"></span>
               Neo4j Connected
-            </div>
+            </div> */}
             <button
               className={`btn-simulate ${loadingAws ? "loading" : ""}`}
               style={{ background: "rgba(255,153,0,0.15)", border: "1px solid rgba(255,153,0,0.3)", color: "#FF9900" }}
@@ -227,11 +292,11 @@ function App() {
                   <span className="legend-dot resource"></span> Resource
                 </div>
                 <div className="legend-item">
-                  <span className="legend-dot" style={{background: "#c084fc"}}></span> Policy
+                  <span className="legend-dot" style={{ background: "#c084fc" }}></span> Policy
                 </div>
-                <div className="legend-item" style={{marginLeft: "0.5rem", paddingLeft: "1rem", borderLeft: "1px solid rgba(255,255,255,0.1)"}}>
-                  <span style={{display: "inline-block", width: "16px", height: "3px", background: "#f43f5e", borderRadius: "2px", boxShadow: "0 0 8px rgba(244, 63, 94, 0.6)"}}></span>
-                  <span style={{fontWeight: 600, color: "#f43f5e", letterSpacing: "0.02em"}}>Escalation Chain</span>
+                <div className="legend-item" style={{ marginLeft: "0.5rem", paddingLeft: "1rem", borderLeft: "1px solid rgba(255,255,255,0.1)" }}>
+                  <span style={{ display: "inline-block", width: "16px", height: "3px", background: "#f43f5e", borderRadius: "2px", boxShadow: "0 0 8px rgba(244, 63, 94, 0.6)" }}></span>
+                  <span style={{ fontWeight: 600, color: "#f43f5e", letterSpacing: "0.02em" }}>Escalation Chain</span>
                 </div>
               </div>
             </div>

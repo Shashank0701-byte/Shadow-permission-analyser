@@ -66,45 +66,36 @@ def _find_bridge_roles(G: nx.DiGraph) -> list[dict]:
     if not users or not resources or not roles:
         return []
 
-    # Count how many (user → resource) pairs are reachable in the full graph
-    def count_reachable_pairs(graph):
-        count = 0
-        pairs = []
-        for u in users:
-            if u not in graph:
-                continue
-            for r in resources:
-                if r not in graph:
-                    continue
-                if nx.has_path(graph, u, r):
-                    count += 1
-                    pairs.append((u, r))
-        return count, pairs
-
-    base_count, base_pairs = count_reachable_pairs(G)
+    # Precompute reachable user→resource pairs once from G
+    base_pairs = []
+    for u in users:
+        for r in resources:
+            if nx.has_path(G, u, r):
+                base_pairs.append((u, r))
+    base_count = len(base_pairs)
 
     if base_count == 0:
         return []
 
     bridges = []
+    nodes_set = set(G.nodes)
     for role_id in roles:
-        # Temporarily remove this role node
-        H = G.copy()
-        H.remove_node(role_id)
-        new_count, _ = count_reachable_pairs(H)
-
-        broken = base_count - new_count
+        # Avoid copying G; use a fast subgraph view ignoring the role_id
+        H = G.subgraph(nodes_set - {role_id})
+        broken_pairs = []
+        for u, r in base_pairs:
+            if role_id in [u, r]:
+                # If the role itself is the user/resource, skip
+                continue
+            if not nx.has_path(H, u, r):
+                broken_pairs.append({
+                    "user": G.nodes[u].get("name"),
+                    "resource": G.nodes[r].get("name"),
+                })
+        
+        broken = len(broken_pairs)
         if broken > 0:
             attrs = G.nodes[role_id]
-            # Find which specific pairs are broken
-            broken_pairs = []
-            for u, r in base_pairs:
-                if u in H and r in H and not nx.has_path(H, u, r):
-                    broken_pairs.append({
-                        "user": G.nodes[u].get("name"),
-                        "resource": G.nodes[r].get("name"),
-                    })
-
             bridges.append({
                 "id": role_id,
                 "name": attrs.get("name"),
