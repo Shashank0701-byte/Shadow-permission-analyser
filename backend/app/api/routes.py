@@ -567,25 +567,18 @@ def reassign_roles_batch(req: BatchReassignRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# ── POST /temporary-access ─────────────────────────────────────────────────
-
-import os
 import json
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import boto3
-import traceback
 
 SESSIONS_FILE = os.path.join(os.path.dirname(__file__), "temp_sessions.json")
 _sessions_lock = threading.Lock()
 
 def _load_sessions():
     if os.path.exists(SESSIONS_FILE):
-        try:
-            with open(SESSIONS_FILE, "r") as f:
-                return json.load(f)
-        except json.JSONDecodeError as e:
-            print(f"Error decoding sessions: {e}")
+        with open(SESSIONS_FILE, "r") as f:
+            return json.load(f)
     return {}
 
 def _save_sessions(sessions):
@@ -640,6 +633,7 @@ def sync_rollback_temp_access(req_data: dict):
                 }))
         except Exception as e:
             print(f"Rollback error (Remove from {req_data['new_role']}):", e)
+            return False
 
         # 2. Add back to old_role (if there was one)
         if req_data.get("old_role"):
@@ -661,11 +655,16 @@ def sync_rollback_temp_access(req_data: dict):
                     iam.update_assume_role_policy(RoleName=req_data["old_role"], PolicyDocument=json.dumps(old_trust))
             except Exception as e:
                 print(f"Rollback error (Add to {req_data['old_role']}):", e)
+                return False
 
-        # 3. Trigger graph rebuild
-        dataset = fetch_live_aws_iam_data()
-        clear_graph()
-        build_graph(dataset)
+        try:
+            dataset = fetch_live_aws_iam_data()
+            clear_graph()
+            build_graph(dataset)
+        except Exception as e:
+            print("Rollback error (Graph rebuild):", e)
+            return False
+            
         print(f"Rollback completed for {req_data['user']}: {req_data['new_role']} -> {req_data.get('old_role') or 'None'}")
         return True
     except Exception as e:
@@ -675,12 +674,12 @@ def sync_rollback_temp_access(req_data: dict):
 
 def _reconciler_loop():
     import time
-    from datetime import datetime
+    from datetime import datetime, timezone
     while True:
         try:
             with _sessions_lock:
                 sessions = _load_sessions()
-            now = datetime.now()
+            now = datetime.now(timezone.utc)
             expired = []
             
             for user, info in sessions.items():
@@ -723,13 +722,8 @@ def grant_temporary_access(req: TempAccessRequest):
             if req.user in sessions:
                 raise HTTPException(status_code=400, detail=f"{req.user} already has an active temporary session")
 
-        # Reuse batch logic
-        res = reassign_roles_batch(BatchReassignRequest(changes=[RoleChange(user=req.user, old_role=req.old_role, new_role=req.new_role)]))
-
-        # Register durable session
-        expires_time = datetime.now() + timedelta(seconds=req.duration_seconds)
-        with _sessions_lock:
-            sessions = _load_sessions()
+            # Register durable session before calling AWS to prevent race conditions
+            expires_time = datetime.now(timezone.utc) + timedelta(seconds=req.duration_seconds)
             sessions[req.user] = {
                 "expires_at": expires_time.isoformat(),
                 "duration": req.duration_seconds,
@@ -738,8 +732,20 @@ def grant_temporary_access(req: TempAccessRequest):
             }
             _save_sessions(sessions)
 
+        try:
+            # Reuse batch logic
+            res = reassign_roles_batch(BatchReassignRequest(changes=[RoleChange(user=req.user, old_role=req.old_role, new_role=req.new_role)]))
+        except Exception as e:
+            # Clean up the pre-written session if API call failed
+            with _sessions_lock:
+                sessions = _load_sessions()
+                if req.user in sessions:
+                    del sessions[req.user]
+                    _save_sessions(sessions)
+            raise e
+
         # Extend response
-        res["expires_at"] = sessions[req.user]["expires_at"]
+        res["expires_at"] = expires_time.isoformat()
         return res
     except HTTPException:
         raise
@@ -754,13 +760,15 @@ def get_temporary_sessions():
         sessions = _load_sessions()
 
     result = []
+    now = datetime.now(timezone.utc)
     for user, info in sessions.items():
-        result.append({
-            "user": user,
-            "old_role": info["old_role"],
-            "new_role": info["new_role"],
-            "expires_at": info["expires_at"],
-            "duration": info["duration"]
-        })
+        if now <= datetime.fromisoformat(info["expires_at"]):
+            result.append({
+                "user": user,
+                "old_role": info["old_role"],
+                "new_role": info["new_role"],
+                "expires_at": info["expires_at"],
+                "duration": info["duration"]
+            })
     return {"sessions": result}
 

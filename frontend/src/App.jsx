@@ -32,6 +32,7 @@ function App() {
         weakestUserRef.current = data.weakest_user.user;
       } else {
         weakestUserRef.current = null;
+        setBlastData(null);
       }
 
       const userParams = weakestUserRef.current ? `?highlight_user=${encodeURIComponent(weakestUserRef.current)}` : "";
@@ -71,6 +72,7 @@ function App() {
         weakestUserRef.current = data.weakest_user.user;
       } else {
         weakestUserRef.current = "";
+        setBlastData(null);
       }
 
       const userParams = weakestUserRef.current ? `?highlight_user=${encodeURIComponent(weakestUserRef.current)}` : "";
@@ -135,12 +137,14 @@ function App() {
     }
 
     // 2. Update user_analyses and determine weakest user
+    newSimData.user_analyses = [...(simData.user_analyses || [])];
+
     if (reassignData.user_analysis) {
       const ua = reassignData.user_analysis;
-      const existingIdx = newSimData.user_analyses?.findIndex((u) => u.user === ua.user);
+      const existingIdx = newSimData.user_analyses.findIndex((u) => u.user === ua.user);
       if (existingIdx !== undefined && existingIdx >= 0) {
         newSimData.user_analyses[existingIdx] = ua;
-      } else if (newSimData.user_analyses) {
+      } else {
         newSimData.user_analyses.push(ua);
       }
     } else if (reassignData.after && typeof reassignData.after === "object") {
@@ -148,7 +152,7 @@ function App() {
       if (users.length > 0) {
         users.forEach(u => {
            const afterStats = reassignData.after[u];
-           const existingIdx = newSimData.user_analyses?.findIndex(ua => ua.user === u);
+           const existingIdx = newSimData.user_analyses.findIndex(ua => ua.user === u);
            if (existingIdx !== undefined && existingIdx >= 0) {
               newSimData.user_analyses[existingIdx] = {
                  ...newSimData.user_analyses[existingIdx],

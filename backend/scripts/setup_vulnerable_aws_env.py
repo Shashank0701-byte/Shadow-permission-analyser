@@ -34,7 +34,7 @@ def setup_vulnerable_aws_env():
     if os.environ.get("ALLOW_MUTATE_AWS", "").lower() != "true":
         print("⚠️ ABORTING: AWS mutation requires explicit opt-in.")
         print("Run this script with the environment variable ALLOW_MUTATE_AWS=true:")
-        print("    ALLOW_MUTATE_AWS=true python setup_vulnerable_aws_env.py")
+        print("    ALLOW_MUTATE_AWS=true python backend/scripts/setup_vulnerable_aws_env.py")
         sys.exit(1)
 
     iam = boto3.client('iam')
