@@ -1,54 +1,88 @@
-import { useEffect, useState } from "react";
 import ForceGraph2D from "react-force-graph-2d";
+import { useRef, useCallback } from "react";
 
-export default function GraphView() {
+const NODE_COLORS = {
+  User: "#60a5fa",
+  Role: "#34d399",
+  Resource: "#fbbf24",
+  Policy: "#c084fc",
+};
 
-  const [graphData, setGraphData] = useState({ nodes: [], links: [] });
+const EDGE_COLORS = {
+  ASSIGNED: "rgba(96, 165, 250, 0.35)",
+  ASSUME: "rgba(52, 211, 153, 0.35)",
+  ACCESS: "rgba(251, 191, 36, 0.35)",
+  HAS_ROLE: "rgba(96, 165, 250, 0.35)",
+  HAS_POLICY: "rgba(192, 132, 252, 0.35)",
+};
 
-  const API_BASE = import.meta.env.VITE_API_URL;
+export default function GraphView({ graphData, graphKey }) {
+  const fgRef = useRef();
 
-useEffect(() => {
-  const loadGraph = async () => {
-    try {
-      const res = await fetch(`${API_BASE}/graph`);
+  const paintNode = useCallback((node, ctx) => {
+    const color = NODE_COLORS[node.label] || "#64748b";
+    const size = node.label === "Resource" || node.label === "Policy" ? 7 : node.label === "Role" ? 6 : 5;
 
-      if (!res.ok) {
-        throw new Error(`API error: ${res.status}`);
-      }
+    // Outer glow
+    ctx.beginPath();
+    ctx.arc(node.x, node.y, size + 3, 0, 2 * Math.PI);
+    ctx.fillStyle =
+      color.replace(")", ", 0.15)").replace("rgb", "rgba");
+    ctx.fill();
 
-      const data = await res.json();
-      setGraphData(data);
+    // Node circle
+    ctx.beginPath();
+    ctx.arc(node.x, node.y, size, 0, 2 * Math.PI);
+    ctx.fillStyle = color;
+    ctx.fill();
 
-    } catch (err) {
-      console.error("Graph fetch failed:", err);
+    // Border
+    ctx.strokeStyle = "rgba(255,255,255,0.2)";
+    ctx.lineWidth = 0.5;
+    ctx.stroke();
+
+    // Label
+    ctx.fillStyle = "#e2e8f0";
+    ctx.font = "bold 3.5px Inter, sans-serif";
+    ctx.textAlign = "left";
+    ctx.fillText(node.name || "", node.x + size + 3, node.y + 1.5);
+  }, []);
+
+  const paintLink = useCallback((link, ctx) => {
+    // If it's an escalation edge, glow with a danger color
+    if (link.is_escalation) {
+      ctx.strokeStyle = "rgba(244, 63, 94, 0.85)";
+      ctx.lineWidth = 2.5;
+    } else {
+      ctx.strokeStyle = EDGE_COLORS[link.type] || "rgba(100,100,100,0.2)";
+      ctx.lineWidth = 1.2;
     }
-  };
-
-  loadGraph();
-}, []);
-
-  const nodeColor = (node) => {
-    if (node.label === "User") return "#1f77b4";
-    if (node.label === "Role") return "#2ca02c";
-    if (node.label === "Resource") return "#ff7f0e";
-    return "#999";
-  };
+    ctx.beginPath();
+    ctx.moveTo(link.source.x, link.source.y);
+    ctx.lineTo(link.target.x, link.target.y);
+    ctx.stroke();
+  }, []);
 
   return (
-    <ForceGraph2D
-      graphData={graphData}
-      nodeLabel="name"
-      nodeAutoColorBy="label"
-      nodeCanvasObject={(node, ctx) => {
-        ctx.fillStyle = nodeColor(node);
-        ctx.beginPath();
-        ctx.arc(node.x, node.y, 6, 0, 2 * Math.PI);
-        ctx.fill();
-
-        ctx.fillStyle = "black";
-        ctx.font = "10px Arial";
-        ctx.fillText(node.name, node.x + 8, node.y + 3);
-      }}
-    />
+    <div className="graph-container">
+      <ForceGraph2D
+        key={graphKey}
+        ref={fgRef}
+        graphData={graphData}
+        nodeLabel="name"
+        nodeCanvasObject={paintNode}
+        linkCanvasObject={paintLink}
+        backgroundColor="transparent"
+        width={undefined}
+        height={420}
+        cooldownTicks={80}
+        d3AlphaDecay={0.02}
+        d3VelocityDecay={0.3}
+        linkDirectionalArrowLength={4}
+        linkDirectionalArrowRelPos={0.85}
+        linkDirectionalArrowColor={() => "rgba(148, 163, 184, 0.4)"}
+        onEngineStop={() => fgRef.current?.zoomToFit(300, 40)}
+      />
+    </div>
   );
 }
