@@ -1,6 +1,5 @@
 import boto3
 import json
-import os
 from pathlib import Path
 
 iam = boto3.client("iam")
@@ -22,12 +21,12 @@ for page in user_paginator.paginate():
         username = user["UserName"]
         data["users"].append(username)
 
-        groups = iam.list_groups_for_user(UserName=username)["Groups"]
-        for g in groups:
-            data["user_roles"].append({
-                "user": username,
-                "role": g["GroupName"]
-            })
+        for group_page in iam.get_paginator('list_groups_for_user').paginate(UserName=username):
+            for g in group_page["Groups"]:
+                data["user_roles"].append({
+                    "user": username,
+                    "role": g["GroupName"]
+                })
 
 # Get roles
 role_paginator = iam.get_paginator('list_roles')
@@ -36,15 +35,14 @@ for page in role_paginator.paginate():
         rolename = role["RoleName"]
         data["roles"].append(rolename)
 
-        policies = iam.list_attached_role_policies(RoleName=rolename)["AttachedPolicies"]
-
-        for p in policies:
-            policy_name = p["PolicyName"]
-            policies_set.add(policy_name)
-            data["role_policies"].append({
-                "role": rolename,
-                "policy": policy_name
-            })
+        for policy_page in iam.get_paginator('list_attached_role_policies').paginate(RoleName=rolename):
+            for p in policy_page["AttachedPolicies"]:
+                policy_name = p["PolicyName"]
+                policies_set.add(policy_name)
+                data["role_policies"].append({
+                    "role": rolename,
+                    "policy": policy_name
+                })
 
 data["policies"] = list(policies_set)
 

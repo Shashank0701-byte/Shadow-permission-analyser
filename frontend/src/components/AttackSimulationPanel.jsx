@@ -8,7 +8,11 @@ export default function AttackSimulationPanel({ user }) {
   const [error, setError] = useState(null);
 
   useEffect(() => {
-    if (!user) return;
+    if (!user) {
+      setLoading(false);
+      setError(null);
+      return;
+    }
     setLoading(true);
     setError(null);
     

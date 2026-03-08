@@ -167,7 +167,6 @@ def get_full_graph(highlight_user: str | None = None) -> dict:
         query_escalation = """
         MATCH path = (u:User {name: $highlight_user})-[:ASSIGNED|ASSUME*]->(r:Role)-[:ACCESS]->(res:Resource)
         RETURN path
-        ORDER BY length(path) ASC
         """
     else:
         query_escalation = """

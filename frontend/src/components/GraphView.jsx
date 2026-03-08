@@ -17,11 +17,17 @@ const EDGE_COLORS = {
 };
 
 const hexToRgba = (hex, alpha) => {
-  if (!hex.startsWith('#')) return hex;
-  const r = parseInt(hex.slice(1, 3), 16);
-  const g = parseInt(hex.slice(3, 5), 16);
-  const b = parseInt(hex.slice(5, 7), 16);
-  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+  if (!hex || typeof hex !== 'string') return "rgba(0,0,0,0)";
+  let h = hex.trim();
+  if (!h.startsWith("#")) return h;
+  h = h.slice(1);
+  if (h.length === 3) h = h.split('').map(c => c + c).join('');
+  if (h.length !== 6 || !/^[0-9A-Fa-f]{6}$/.test(h)) return "rgba(0,0,0,0)";
+  const r = parseInt(h.slice(0, 2), 16);
+  const g = parseInt(h.slice(2, 4), 16);
+  const b = parseInt(h.slice(4, 6), 16);
+  const a = Math.max(0, Math.min(1, alpha ?? 1));
+  return `rgba(${r}, ${g}, ${b}, ${a})`;
 };
 
 export default function GraphView({ graphData, graphKey }) {

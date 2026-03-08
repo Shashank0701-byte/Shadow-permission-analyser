@@ -30,6 +30,8 @@ function App() {
       setSimData(data);
       if (data.weakest_user?.user) {
         weakestUserRef.current = data.weakest_user.user;
+      } else {
+        weakestUserRef.current = null;
       }
 
       const userParams = weakestUserRef.current ? `?highlight_user=${encodeURIComponent(weakestUserRef.current)}` : "";
@@ -67,6 +69,8 @@ function App() {
       setSimData(data);
       if (data.weakest_user?.user) {
         weakestUserRef.current = data.weakest_user.user;
+      } else {
+        weakestUserRef.current = "";
       }
 
       const userParams = weakestUserRef.current ? `?highlight_user=${encodeURIComponent(weakestUserRef.current)}` : "";
@@ -107,11 +111,77 @@ function App() {
 
   // Callback when a role is reassigned — refresh graph + panels
   const handleReassigned = useCallback(async (reassignData) => {
-    if (reassignData && reassignData.user_analysis && reassignData.after?.risk_score > 0) {
-      weakestUserRef.current = reassignData.user_analysis.user;
+    if (!reassignData || reassignData.status === "expired") {
+      try {
+        const userParams = weakestUserRef.current ? `?highlight_user=${encodeURIComponent(weakestUserRef.current)}` : "";
+        const gRes = await fetch(`${API_BASE}/graph${userParams}`);
+        if (gRes.ok) {
+          const gData = await gRes.json();
+          setGraphData(gData);
+          setGraphKey((k) => k + 1);
+        }
+      } catch (err) {
+        console.error("Graph refresh failed:", err);
+      }
+      return;
     }
 
-    // 1. Refresh graph
+    if (!simData) return;
+    const newSimData = { ...simData };
+
+    // 1. Update centrality
+    if (reassignData.centrality) {
+      newSimData.centrality = reassignData.centrality;
+    }
+
+    // 2. Update user_analyses and determine weakest user
+    if (reassignData.user_analysis) {
+      const ua = reassignData.user_analysis;
+      const existingIdx = newSimData.user_analyses?.findIndex((u) => u.user === ua.user);
+      if (existingIdx !== undefined && existingIdx >= 0) {
+        newSimData.user_analyses[existingIdx] = ua;
+      } else if (newSimData.user_analyses) {
+        newSimData.user_analyses.push(ua);
+      }
+    } else if (reassignData.after && typeof reassignData.after === "object") {
+      const users = Object.keys(reassignData.after);
+      if (users.length > 0) {
+        users.forEach(u => {
+           const afterStats = reassignData.after[u];
+           const existingIdx = newSimData.user_analyses?.findIndex(ua => ua.user === u);
+           if (existingIdx !== undefined && existingIdx >= 0) {
+              newSimData.user_analyses[existingIdx] = {
+                 ...newSimData.user_analyses[existingIdx],
+                 overall_risk_score: afterStats.risk_score,
+                 risk_level: afterStats.risk_level,
+                 total_paths: afterStats.total_paths
+              };
+           }
+        });
+      }
+    }
+
+    if (newSimData.user_analyses && newSimData.user_analyses.length > 0) {
+      const weakest = [...newSimData.user_analyses].sort((a, b) => (b.overall_risk_score || 0) - (a.overall_risk_score || 0))[0];
+      if (weakest && weakest.overall_risk_score > 0) {
+        newSimData.weakest_user = {
+          user: weakest.user,
+          risk_level: weakest.risk_level,
+          overall_risk_score: weakest.overall_risk_score,
+          total_escalation_paths: weakest.total_paths,
+          max_depth: weakest.max_depth,
+          sensitive_targets: weakest.sensitive_targets,
+        };
+      } else {
+        newSimData.weakest_user = null;
+      }
+    }
+
+    const nextWeakestUser = newSimData.weakest_user?.user ?? null;
+    weakestUserRef.current = nextWeakestUser;
+    
+    setSimData(newSimData);
+
     try {
       const userParams = weakestUserRef.current ? `?highlight_user=${encodeURIComponent(weakestUserRef.current)}` : "";
       const gRes = await fetch(`${API_BASE}/graph${userParams}`);
@@ -124,96 +194,10 @@ function App() {
       console.error("Graph refresh failed:", err);
     }
 
-    if (!reassignData || reassignData.status === "expired") {
-      return; // Expiration only needs to trigger a graph refresh
-    }
-
-    // Update sim data comprehensively
-    let targetUser = null;
-    setSimData((prev) => {
-      if (!prev) return prev;
-      const newSimData = { ...prev };
-
-      // 1. Update centrality
-      if (reassignData.centrality) {
-        newSimData.centrality = reassignData.centrality;
-      }
-
-      // 2. Update user_analyses and determine weakest user
-      if (reassignData.user_analysis) {
-        // Single reassignment
-        const ua = reassignData.user_analysis;
-        targetUser = ua.user;
-        const existingIdx = newSimData.user_analyses?.findIndex((u) => u.user === ua.user);
-        if (existingIdx !== undefined && existingIdx >= 0) {
-          newSimData.user_analyses[existingIdx] = ua;
-        } else if (newSimData.user_analyses) {
-          newSimData.user_analyses.push(ua);
-        }
-
-        // Recompute weakest_user from all user_analyses
-        if (newSimData.user_analyses && newSimData.user_analyses.length > 0) {
-          const weakest = [...newSimData.user_analyses].sort((a, b) => (b.overall_risk_score || 0) - (a.overall_risk_score || 0))[0];
-          if (weakest && weakest.overall_risk_score > 0) {
-            newSimData.weakest_user = {
-              user: weakest.user,
-              risk_level: weakest.risk_level,
-              overall_risk_score: weakest.overall_risk_score,
-              total_escalation_paths: weakest.total_paths,
-              max_depth: weakest.max_depth,
-              sensitive_targets: weakest.sensitive_targets,
-            };
-          } else {
-            newSimData.weakest_user = null;
-          }
-        }
-      } else if (reassignData.after && typeof reassignData.after === "object") {
-        // Batch/temporary reassignment
-        const users = Object.keys(reassignData.after);
-        if (users.length > 0) {
-          targetUser = users[0];
-          
-          users.forEach(u => {
-             const afterStats = reassignData.after[u];
-             const existingIdx = newSimData.user_analyses?.findIndex(ua => ua.user === u);
-             if (existingIdx !== undefined && existingIdx >= 0) {
-                // We don't have full path data, but we can update the scores to stop the UI from showing stale data
-                newSimData.user_analyses[existingIdx] = {
-                   ...newSimData.user_analyses[existingIdx],
-                   overall_risk_score: afterStats.risk_score,
-                   risk_level: afterStats.risk_level,
-                   total_paths: afterStats.total_paths
-                };
-             }
-          });
-
-          // Recompute weakest_user from user_analyses
-          if (newSimData.user_analyses && newSimData.user_analyses.length > 0) {
-            const weakest = [...newSimData.user_analyses].sort((a, b) => (b.overall_risk_score || 0) - (a.overall_risk_score || 0))[0];
-            if (weakest && weakest.overall_risk_score > 0) {
-              newSimData.weakest_user = {
-                user: weakest.user,
-                risk_level: weakest.risk_level,
-                overall_risk_score: weakest.overall_risk_score,
-                total_escalation_paths: weakest.total_paths,
-                max_depth: weakest.max_depth,
-                sensitive_targets: weakest.sensitive_targets,
-              };
-            } else {
-              newSimData.weakest_user = null;
-            }
-          }
-        }
-      }
-
-      return newSimData;
-    });
-
-    // Refresh blast radius for the reassigned user
-    if (targetUser) {
+    if (nextWeakestUser) {
       try {
         const bRes = await fetch(
-          `${API_BASE}/blast-radius/${encodeURIComponent(targetUser)}`
+          `${API_BASE}/blast-radius/${encodeURIComponent(nextWeakestUser)}`
         );
         if (bRes.ok) {
           setBlastData(await bRes.json());
@@ -221,8 +205,10 @@ function App() {
       } catch (err) {
         console.error("Blast radius refresh failed:", err);
       }
+    } else {
+      setBlastData(null);
     }
-  }, []);
+  }, [simData]);
 
   return (
     <div className="app">

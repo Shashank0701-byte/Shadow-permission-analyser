@@ -158,9 +158,12 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .stat-card {
-    animation: none;
-    opacity: 1;
+  .stat-card,
+  .weakest-user-card,
+  .panel {
+    animation: none !important;
+    transition: none !important;
+    opacity: 1 !important;
   }
 }
 
