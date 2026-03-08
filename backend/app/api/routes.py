@@ -39,8 +39,8 @@ def simulate(
     """
     try:
         # Get all users currently in the graph
-        session = get_session()
-        users = [r[0] for r in session.run("MATCH (n:User) RETURN n.name")]
+        with get_session() as session:
+            users = [r[0] for r in session.run("MATCH (n:User) RETURN n.name")]
 
         # --- Run escalation analysis on every user ---
         user_analyses = []
@@ -138,10 +138,10 @@ def ingest_aws():
 # ── GET /graph ──────────────────────────────────────────────────────────────
 
 @router.get("/graph")
-def get_graph():
+def get_graph(highlight_user: str | None = Query(None, description="User to highlight escalation paths for")):
     """Return the full permission graph for visualisation."""
     try:
-        return get_full_graph()
+        return get_full_graph(highlight_user)
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
@@ -567,14 +567,25 @@ def reassign_roles_batch(req: BatchReassignRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# ── POST /temporary-access ─────────────────────────────────────────────────
+import json
+import threading
+from datetime import datetime, timedelta, timezone
+import boto3
 
-import asyncio
-from datetime import datetime, timedelta
-from fastapi import BackgroundTasks
+SESSIONS_FILE = os.path.join(os.path.dirname(__file__), "temp_sessions.json")
+_sessions_lock = threading.Lock()
 
-# Memory store for active temporary sessions
-active_temp_sessions = {}
+def _load_sessions():
+    if os.path.exists(SESSIONS_FILE):
+        with open(SESSIONS_FILE, "r") as f:
+            return json.load(f)
+    return {}
+
+def _save_sessions(sessions):
+    temp_file = SESSIONS_FILE + ".tmp"
+    with open(temp_file, "w") as f:
+        json.dump(sessions, f, indent=2)
+    os.replace(temp_file, SESSIONS_FILE)
 
 class TempAccessRequest(BaseModel):
     user: str
@@ -582,13 +593,8 @@ class TempAccessRequest(BaseModel):
     new_role: str
     duration_seconds: int
 
-async def rollback_temp_access(req: TempAccessRequest):
-    """Wait for the duration, then revert the trust policy mapping back to its original state."""
-    await asyncio.sleep(req.duration_seconds)
-
-    # Time's up! Revert state.
-    import boto3
-    import json
+def sync_rollback_temp_access(req_data: dict):
+    """Revert the trust policy mapping back to its original state synchronously."""
     try:
         iam = boto3.client("iam")
         sts = boto3.client("sts")
@@ -596,16 +602,16 @@ async def rollback_temp_access(req: TempAccessRequest):
 
         is_iam_user = False
         try:
-            iam.get_user(UserName=req.user)
+            iam.get_user(UserName=req_data["user"])
             is_iam_user = True
         except iam.exceptions.NoSuchEntityException:
             pass
 
-        user_arn = f"arn:aws:iam::{account_id}:{'user' if is_iam_user else 'role'}/{req.user}"
+        user_arn = f"arn:aws:iam::{account_id}:{'user' if is_iam_user else 'role'}/{req_data['user']}"
 
         # 1. Remove from new_role (the temporary assignment)
         try:
-            new_role_data = iam.get_role(RoleName=req.new_role)["Role"]
+            new_role_data = iam.get_role(RoleName=req_data["new_role"])["Role"]
             new_trust = new_role_data["AssumeRolePolicyDocument"]
             new_stmts = []
             for stmt in new_trust.get("Statement", []):
@@ -619,19 +625,20 @@ async def rollback_temp_access(req: TempAccessRequest):
                         new_stmts.append(stmt)
             if new_stmts:
                 new_trust["Statement"] = new_stmts
-                iam.update_assume_role_policy(RoleName=req.new_role, PolicyDocument=json.dumps(new_trust))
+                iam.update_assume_role_policy(RoleName=req_data["new_role"], PolicyDocument=json.dumps(new_trust))
             else:
-                iam.update_assume_role_policy(RoleName=req.new_role, PolicyDocument=json.dumps({
+                iam.update_assume_role_policy(RoleName=req_data["new_role"], PolicyDocument=json.dumps({
                     "Version": "2012-10-17",
                     "Statement": [{"Effect": "Deny", "Principal": {"AWS": "*"}, "Action": "sts:AssumeRole"}]
                 }))
         except Exception as e:
-            print(f"Rollback error (Remove from {req.new_role}):", e)
+            print(f"Rollback error (Remove from {req_data['new_role']}):", e)
+            return False
 
         # 2. Add back to old_role (if there was one)
-        if req.old_role:
+        if req_data.get("old_role"):
             try:
-                old_role_data = iam.get_role(RoleName=req.old_role)["Role"]
+                old_role_data = iam.get_role(RoleName=req_data["old_role"])["Role"]
                 old_trust = old_role_data["AssumeRolePolicyDocument"]
                 already = False
                 for stmt in old_trust.get("Statement", []):
@@ -645,53 +652,100 @@ async def rollback_temp_access(req: TempAccessRequest):
                         "Principal": {"AWS": user_arn},
                         "Action": "sts:AssumeRole"
                     })
-                    iam.update_assume_role_policy(RoleName=req.old_role, PolicyDocument=json.dumps(old_trust))
+                    iam.update_assume_role_policy(RoleName=req_data["old_role"], PolicyDocument=json.dumps(old_trust))
             except Exception as e:
-                print(f"Rollback error (Add to {req.old_role}):", e)
+                print(f"Rollback error (Add to {req_data['old_role']}):", e)
+                return False
 
-        # 3. Complete and trigger graph rebuild
-        if req.user in active_temp_sessions:
-            del active_temp_sessions[req.user]
-        
-        dataset = fetch_live_aws_iam_data()
-        clear_graph()
-        build_graph(dataset)
-        print(f"Rollback completed for {req.user}: {req.new_role} -> {req.old_role or 'None'}")
+        try:
+            dataset = fetch_live_aws_iam_data()
+            clear_graph()
+            build_graph(dataset)
+        except Exception as e:
+            print("Rollback error (Graph rebuild):", e)
+            return False
+            
+        print(f"Rollback completed for {req_data['user']}: {req_data['new_role']} -> {req_data.get('old_role') or 'None'}")
+        return True
     except Exception as e:
         print("Rollback critical error:", e)
+        return False
+
+
+def _reconciler_loop():
+    import time
+    from datetime import datetime, timezone
+    while True:
+        try:
+            with _sessions_lock:
+                sessions = _load_sessions()
+            now = datetime.now(timezone.utc)
+            expired = []
+            
+            for user, info in sessions.items():
+                if now > datetime.fromisoformat(info["expires_at"]):
+                    expired.append((user, info))
+                    
+            for user, info in expired:
+                info["user"] = user
+                success = sync_rollback_temp_access(info)
+                if success:
+                    with _sessions_lock:
+                        sessions = _load_sessions()
+                        if user in sessions:
+                            del sessions[user]
+                        _save_sessions(sessions)
+                else:
+                    print(f"Rollback failed for {user}, leaving session for retry.")
+                
+            time.sleep(5)
+        except Exception as e:
+            print(f"Reconciler error: {e}")
+            time.sleep(5)
+
+@router.on_event("startup")
+def startup_event():
+    threading.Thread(target=_reconciler_loop, daemon=True).start()
 
 
 @router.post("/temporary-access")
-def grant_temporary_access(req: TempAccessRequest, bg_tasks: BackgroundTasks):
+def grant_temporary_access(req: TempAccessRequest):
     """
     Grants temporary elevated privileged access.
-    Instantly changes live AWS, and schedules an automatic background job to revert it when the time expires.
+    Instantly changes live AWS, and registers a durable session for the background reconciler to revert.
     """
-    # 1. We just use the existing reassign_roles_batch logic by importing/calling it or running it inline
-    # Actually, we can reuse the logic easily:
     try:
-        # Check if already active
-        if req.user in active_temp_sessions:
-            raise HTTPException(status_code=400, detail=f"{req.user} already has an active temporary session")
+        with _sessions_lock:
+            sessions = _load_sessions()
+            
+            # Check if already active
+            if req.user in sessions:
+                raise HTTPException(status_code=400, detail=f"{req.user} already has an active temporary session")
 
-        # Reuse batch logic
-        # We process this as a single batch with 1 change
-        res = reassign_roles_batch(BatchReassignRequest(changes=[RoleChange(user=req.user, old_role=req.old_role, new_role=req.new_role)]))
+            # Register durable session before calling AWS to prevent race conditions
+            expires_time = datetime.now(timezone.utc) + timedelta(seconds=req.duration_seconds)
+            sessions[req.user] = {
+                "expires_at": expires_time.isoformat(),
+                "duration": req.duration_seconds,
+                "old_role": req.old_role,
+                "new_role": req.new_role
+            }
+            _save_sessions(sessions)
 
-        # Schedule the rollback!
-        bg_tasks.add_task(rollback_temp_access, req)
+        try:
+            # Reuse batch logic
+            res = reassign_roles_batch(BatchReassignRequest(changes=[RoleChange(user=req.user, old_role=req.old_role, new_role=req.new_role)]))
+        except Exception as e:
+            # Clean up the pre-written session if API call failed
+            with _sessions_lock:
+                sessions = _load_sessions()
+                if req.user in sessions:
+                    del sessions[req.user]
+                    _save_sessions(sessions)
+            raise e
 
-        # Register in active sessions dictionary
-        expires_time = datetime.now() + timedelta(seconds=req.duration_seconds)
-        active_temp_sessions[req.user] = {
-            "expires_at": expires_time.isoformat(),
-            "duration": req.duration_seconds,
-            "old_role": req.old_role,
-            "new_role": req.new_role
-        }
-
-        # Extend our response to include the timer info
-        res["expires_at"] = active_temp_sessions[req.user]["expires_at"]
+        # Extend response
+        res["expires_at"] = expires_time.isoformat()
         return res
     except HTTPException:
         raise
@@ -702,25 +756,19 @@ def grant_temporary_access(req: TempAccessRequest, bg_tasks: BackgroundTasks):
 @router.get("/temporary-sessions")
 def get_temporary_sessions():
     """Return list of active temporary time-bound sessions and when they expire"""
-    # Clean up expired ones from dict manually to be safe
-    now = datetime.now()
-    to_delete = []
-    for user, info in active_temp_sessions.items():
-        if now > datetime.fromisoformat(info["expires_at"]):
-            to_delete.append(user)
-    
-    for u in to_delete:
-        del active_temp_sessions[u]
+    with _sessions_lock:
+        sessions = _load_sessions()
 
-    # Convert sizes for frontend mapping
     result = []
-    for user, info in active_temp_sessions.items():
-        result.append({
-            "user": user,
-            "old_role": info["old_role"],
-            "new_role": info["new_role"],
-            "expires_at": info["expires_at"],
-            "duration": info["duration"]
-        })
+    now = datetime.now(timezone.utc)
+    for user, info in sessions.items():
+        if now <= datetime.fromisoformat(info["expires_at"]):
+            result.append({
+                "user": user,
+                "old_role": info["old_role"],
+                "new_role": info["new_role"],
+                "expires_at": info["expires_at"],
+                "duration": info["duration"]
+            })
     return {"sessions": result}
 

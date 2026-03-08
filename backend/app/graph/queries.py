@@ -159,15 +159,24 @@ def get_sensitive_resources(min_sensitivity: int = 4) -> list[dict]:
 # Full-graph visualisation
 # ---------------------------------------------------------------------------
 
-def get_full_graph() -> dict:
+def get_full_graph(highlight_user: str | None = None) -> dict:
     """Return all nodes and edges for the force-directed graph visualisation."""
     query_all = "MATCH (n)-[r]->(m) RETURN n, r, m"
-    query_escalation = """
-    MATCH path = (u:User)-[:ASSIGNED|ASSUME*]->(r:Role)-[:ACCESS]->(res:Resource)
-    RETURN path
-    ORDER BY length(path) ASC
-    LIMIT 1
-    """
+    
+    if highlight_user:
+        query_escalation = """
+        MATCH path = (u:User {name: $highlight_user})-[:ASSIGNED|ASSUME*]->(r:Role)-[:ACCESS]->(res:Resource)
+        RETURN path
+        ORDER BY length(path) ASC
+        LIMIT 1
+        """
+    else:
+        query_escalation = """
+        MATCH path = (u:User)-[:ASSIGNED|ASSUME*]->(r:Role)-[:ACCESS]->(res:Resource)
+        RETURN path
+        ORDER BY length(path) ASC
+        LIMIT 1
+        """
 
     nodes = {}
     edges = []
@@ -175,7 +184,8 @@ def get_full_graph() -> dict:
 
     with get_session() as session:
         # Identify all edges that are part of an escalation path
-        for record in session.run(query_escalation):
+        params = {"highlight_user": highlight_user} if highlight_user else {}
+        for record in session.run(query_escalation, **params):
             for rel in record["path"].relationships:
                 escalation_edge_ids.add(rel.element_id)
 

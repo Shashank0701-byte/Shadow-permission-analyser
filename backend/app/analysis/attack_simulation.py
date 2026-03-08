@@ -40,10 +40,13 @@ def generate_attack_steps(user: str) -> dict:
             "message": f"No escalation path found for user '{user}'.",
         }
 
-    # Fetch the account ID from the graph for realistic ARNs
-    session = get_session()
-    # Use a placeholder account ID for display
-    account_id = "XXXXXXXXXXXX"
+    # Fetch the account ID via sts, fallback if no credentials
+    try:
+        import boto3
+        import botocore.exceptions
+        account_id = boto3.client('sts').get_caller_identity()['Account']
+    except (botocore.exceptions.NoCredentialsError, botocore.exceptions.ClientError, botocore.exceptions.EndpointConnectionError):
+        account_id = "XXXXXXXXXXXX"
 
     steps = []
     # The path object has 'nodes' (list of {id, label, name, sensitivity})

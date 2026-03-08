@@ -16,6 +16,20 @@ const EDGE_COLORS = {
   HAS_POLICY: "rgba(192, 132, 252, 0.35)",
 };
 
+const hexToRgba = (hex, alpha) => {
+  if (!hex || typeof hex !== 'string') return "rgba(0,0,0,0)";
+  let h = hex.trim();
+  if (!h.startsWith("#")) return h;
+  h = h.slice(1);
+  if (h.length === 3) h = h.split('').map(c => c + c).join('');
+  if (h.length !== 6 || !/^[0-9A-Fa-f]{6}$/.test(h)) return "rgba(0,0,0,0)";
+  const r = parseInt(h.slice(0, 2), 16);
+  const g = parseInt(h.slice(2, 4), 16);
+  const b = parseInt(h.slice(4, 6), 16);
+  const a = Math.max(0, Math.min(1, alpha ?? 1));
+  return `rgba(${r}, ${g}, ${b}, ${a})`;
+};
+
 export default function GraphView({ graphData, graphKey }) {
   const fgRef = useRef();
 
@@ -26,8 +40,7 @@ export default function GraphView({ graphData, graphKey }) {
     // Outer glow
     ctx.beginPath();
     ctx.arc(node.x, node.y, size + 3, 0, 2 * Math.PI);
-    ctx.fillStyle =
-      color.replace(")", ", 0.15)").replace("rgb", "rgba");
+    ctx.fillStyle = hexToRgba(color, 0.15);
     ctx.fill();
 
     // Node circle

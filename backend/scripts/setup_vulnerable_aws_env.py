@@ -2,6 +2,8 @@ import boto3
 import json
 import logging
 import time
+import os
+import sys
 
 def wait_and_create_role(iam, role_name, trust_doc):
     for i in range(5):
@@ -23,13 +25,26 @@ def wait_and_create_role(iam, role_name, trust_doc):
                 time.sleep(10)
             else:
                 print(f"     ❌ Error creating {role_name}: {e}")
-                break
+                raise
+
+    raise TimeoutError(f"Role {role_name} creation failed after retries due to principal non-propagation.")
 
 def setup_vulnerable_aws_env():
     """Generates a real attack path inside the AWS account."""
+    if os.environ.get("ALLOW_MUTATE_AWS", "").lower() != "true":
+        print("⚠️ ABORTING: AWS mutation requires explicit opt-in.")
+        print("Run this script with the environment variable ALLOW_MUTATE_AWS=true:")
+        print("    ALLOW_MUTATE_AWS=true python backend/scripts/setup_vulnerable_aws_env.py")
+        sys.exit(1)
+
     iam = boto3.client('iam')
     sts = boto3.client("sts")
-    account_id = sts.get_caller_identity()["Account"]
+    import botocore.exceptions
+    try:
+        account_id = sts.get_caller_identity()["Account"]
+    except (botocore.exceptions.ClientError, botocore.exceptions.BotoCoreError) as e:
+        print(f"⚠️ STS Caller identity failed: {e}")
+        sys.exit(1)
     
     print("Creating a Vulnerable AWS IAM Graph for the Hackathon Demo...")
 
